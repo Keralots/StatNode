@@ -1,0 +1,76 @@
+#ifndef SETTINGS_H
+#define SETTINGS_H
+
+#include <Arduino.h>
+
+// Per-gauge color config (RGB565). Mirrors the BambuHelper GaugeColors so the
+// reused gauge primitives in display_gauges.cpp compile unchanged.
+struct GaugeColors {
+  uint16_t arc;       // arc fill color
+  uint16_t label;     // label text color
+  uint16_t value;     // value text color
+};
+
+// Display customization. Trimmed to the fields the reused chassis (display_ui,
+// display_gauges, display_anim) actually reads - the Bambu printer/AMS/Tasmota
+// fields are gone.
+struct DisplaySettings {
+  uint8_t  rotation;          // 0,1,2,3 (x90 degrees)
+  uint16_t bgColor;           // background color
+  uint16_t trackColor;        // inactive arc track color
+  uint16_t progressBarColor;  // top LED progress bar fill color
+  bool     animatedBar;       // shimmer effect on progress bar
+  bool     smallLabels;       // use FONT_SMALL gauge labels instead of FONT_BODY
+  bool     invertColors;      // invert display colors (panel-dependent fix)
+  bool     cydPanelClassic;   // CYD only: plain Panel_ILI9341 (other hw revision)
+  bool     pongClock;         // Pong/Breakout animated idle clock
+  // Gauge full-scale ranges (arc maxima)
+  uint16_t tempScaleMax;      // C (CPU/GPU temperature gauges)
+  uint16_t powerScaleW;       // W (power gauge full-scale)
+  uint8_t  gaugeSmoothing;    // arc easing: 0=Off 1=Slow 2=Normal 3=Fast
+  uint16_t warnColor;         // temp-gauge over-threshold color
+  uint8_t  warnThresholdPct;  // temp gauge turns warnColor at >= this % of scale; 0 = off
+  // Clock idle screen
+  uint16_t clockTimeColor;
+  uint16_t clockDateColor;
+  bool     hideClockDate;
+  GaugeColors progress;       // progress arc colors
+  GaugeColors gauge;          // generic default for temp/fan/power gauges
+};
+
+// Network settings (carried mostly intact - generic WiFi/IP/time config).
+struct NetworkSettings {
+  bool useDHCP;           // true = DHCP, false = static
+  char staticIP[16];
+  char gateway[16];
+  char subnet[16];
+  char dns[16];
+  bool showIPAtStartup;   // show IP screen for a few seconds after WiFi connects
+  uint8_t timezoneIndex;  // index into timezone database (for the idle clock)
+  char timezoneStr[64];   // POSIX TZ string
+  bool use24h;            // true = 24h format (default), false = 12h AM/PM
+  uint8_t dateFormat;     // 0=DD.MM.YYYY .. (see formatter)
+  bool mdnsEnabled;       // advertise <hostname>.local over mDNS
+  char hostname[32];      // mDNS/host label, sanitized [a-z0-9-], default "pcmonitor"
+};
+
+extern char wifiSSID[33];
+extern char wifiPass[65];
+extern uint8_t brightness;
+extern DisplaySettings dispSettings;
+extern NetworkSettings netSettings;
+
+void loadSettings();
+void saveSettings();
+void defaultDisplaySettings(DisplaySettings& ds);
+void defaultNetworkSettings(NetworkSettings& ns);
+
+// RGB565 <-> HTML hex helpers (used by the web portal).
+uint16_t htmlToRgb565(const char* hex);
+void rgb565ToHtml(uint16_t color, char* buf);  // buf must be >= 8 chars
+
+// Normalize a string into a valid mDNS/DNS label: lowercase, keep only
+// [a-z0-9-], strip leading/trailing hyphens. Falls back to "pcmonitor".
+void sanitizeHostname(const char* in, char* out, size_t outSize);
+
+#endif // SETTINGS_H
