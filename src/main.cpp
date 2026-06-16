@@ -1,18 +1,15 @@
-// PCMonitorColor - hello-gauges bring-up.
-// First milestone: prove the ported display chassis compiles and renders arc
-// gauges. Values are dummy oscillators here; the UDP ingest + metric->gauge
-// mapping land in later steps (see pc_metrics.* and the renderer).
+// PCMonitorColor - firmware entry point.
+// Boot: settings -> display -> WiFi (STA or AP setup) -> web/OTA server -> UDP
+// metric listener. The device is a passive receiver: the PC companion pushes
+// V2.1 JSON to UDP :4210, which drives the gauge grid. When no packets arrive
+// the renderer falls back to the idle clock.
 #include <Arduino.h>
-#include <math.h>
 #include "config.h"
-#include "layout.h"
 #include "display_ui.h"
-#include "display_gauges.h"
 #include "settings.h"
-#include "fonts.h"
-
-static bool firstFrame = true;
-static unsigned long lastUpdate = 0;
+#include "wifi_manager.h"
+#include "web_server.h"
+#include "pc_metrics.h"
 
 void setup() {
   Serial.begin(115200);
@@ -21,40 +18,36 @@ void setup() {
   Serial.println(PRODUCT_NAME " " FW_VERSION " boot");
 
   loadSettings();
-  initDisplay();
+  initDisplay();                 // draws the splash
+  setScreenState(SCREEN_SPLASH);
+
+  startWiFiDuringSplash();        // kick off a background STA connect
+  unsigned long splashStart = millis();
+  while (millis() - splashStart < 800) {
+    updateDisplay();
+    flushFrame();
+    delay(20);
+  }
+
+  initWiFi();                     // blocks until STA connects or AP comes up
+  initWebServer();
+  pcMetricsBegin();
+
+  if (isWiFiConnected()) setScreenState(SCREEN_MONITOR);
 }
 
 void loop() {
-  unsigned long now = millis();
-  if (now - lastUpdate < DISPLAY_UPDATE_MS) {
-    flushFrame();
-    return;
+  handleWiFi();
+  handleWebServer();
+  pcMetricsHandle();
+
+  // Once connected (and not mid-OTA / not in AP setup), show the monitor.
+  ScreenState s = getScreenState();
+  if (isWiFiConnected() &&
+      s != SCREEN_OTA_UPDATE && s != SCREEN_AP_MODE && s != SCREEN_MONITOR) {
+    setScreenState(SCREEN_MONITOR);
   }
-  lastUpdate = now;
 
-  // Dummy animated values until the UDP metric source is wired in.
-  float t = now / 1000.0f;
-  float cpuTemp = 45.0f + 35.0f * (0.5f + 0.5f * sinf(t * 0.70f));
-  float gpuTemp = 50.0f + 30.0f * (0.5f + 0.5f * sinf(t * 0.50f + 1.0f));
-  uint8_t cpuLoad = (uint8_t)(50.0f + 50.0f * sinf(t * 0.90f));
-  uint8_t gpuLoad = (uint8_t)(50.0f + 50.0f * sinf(t * 1.10f + 2.0f));
-
-  const int16_t w = (int16_t)tft.width();
-  const int16_t h = (int16_t)tft.height();
-  const int16_t r = LY_GAUGE_R;
-  const int16_t cx1 = w / 4;
-  const int16_t cx2 = w - w / 4;
-  const int16_t cy1 = h / 3;
-  const int16_t cy2 = h - h / 3;
-  const bool fr = firstFrame;
-
-  drawTempGauge(tft, cx1, cy1, r, cpuTemp, 0, (float)dispSettings.tempScaleMax,
-                CLR_ORANGE, "CPU", nullptr, fr, &dispSettings.gauge);
-  drawTempGauge(tft, cx2, cy1, r, gpuTemp, 0, (float)dispSettings.tempScaleMax,
-                CLR_CYAN, "GPU", nullptr, fr, &dispSettings.gauge);
-  drawFanGauge(tft, cx1, cy2, r, cpuLoad, CLR_GREEN, "LOAD", fr, &dispSettings.gauge);
-  drawFanGauge(tft, cx2, cy2, r, gpuLoad, CLR_BLUE, "GPU%", fr, &dispSettings.gauge);
-
-  firstFrame = false;
+  updateDisplay();
   flushFrame();
 }

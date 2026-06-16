@@ -36,6 +36,13 @@ void initDisplay();
 void setBacklight(uint8_t level);
 void applyDisplaySettings();  // re-apply rotation, bg, force redraw
 
+// Renderer (renderer.cpp): screen-state machine + per-frame draw. updateDisplay()
+// is throttled internally and safe to call every loop tick; it also redraws fully
+// on a state change. setScreenState() marks a transition (forces a clean redraw).
+void setScreenState(ScreenState state);
+ScreenState getScreenState();
+void updateDisplay();
+
 // Flush the off-screen framebuffer sprite to the panel (JC3248W535 only; no-op
 // elsewhere). Call once per loop tick after UI draws.
 void flushFrame();
