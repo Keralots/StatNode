@@ -473,7 +473,20 @@ static void clearGaugeCenter(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy,
 // ---------------------------------------------------------------------------
 static void fitValueFont(lgfx::LovyanGFX& gfx, const char* s,
                          int16_t radius, int16_t thickness, FontID base) {
-  if (radius >= 30) { setFont(gfx, base); return; }  // large gauge: unchanged
+  const int16_t innerW = 2 * (radius - thickness - 1) - 2;
+  if (radius >= 30) {
+    // Large gauge: keep the full base font for typical 2-3 digit readings, but
+    // step down when the string is too wide for the clearable inner circle. A
+    // 4-digit reading on a generic value/fan gauge (e.g. "1700" RPM) in the
+    // base font (Inter 19pt) overruns the ring and overlaps it; FONT_BODY (or
+    // FONT_SMALL) fits the width while staying legible.
+    setFont(gfx, base);
+    if (base != FONT_SMALL && gfx.textWidth(s) > innerW) {
+      setFont(gfx, FONT_BODY);
+      if (gfx.textWidth(s) > innerW) setFont(gfx, FONT_SMALL);
+    }
+    return;
+  }
   // Small gauges (the R=28 portrait 9-slot grid): LY_GAUGE_VALUE_FONT (Inter
   // 19pt, ~26px tall) overruns the ~42px inner circle no matter how narrow the
   // string is, so its glyph background can bleed onto the arc ring. Cap at
@@ -482,7 +495,6 @@ static void fitValueFont(lgfx::LovyanGFX& gfx, const char* s,
   FontID f = (base == FONT_SMALL) ? FONT_SMALL : FONT_BODY;
   setFont(gfx, f);
   if (f != FONT_SMALL) {
-    const int16_t innerW = 2 * (radius - thickness - 1) - 2;
     if (gfx.textWidth(s) > innerW) setFont(gfx, FONT_SMALL);
   }
 }
@@ -769,12 +781,13 @@ void drawFanGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,
 // (100-300 W) fills a small slice, a bed-heat spike saturates the ring.
 
 void drawPowerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,
-                    float watts, bool active, const char* label, bool forceRedraw) {
+                    float watts, bool active, const char* label, bool forceRedraw,
+                    float fullScaleW) {
   ScopedWrite sw(gfx);
   const uint16_t startAngle = 60;
   const int16_t thickness = LY_TEMP_GAUGE_T;
   uint16_t bg = dispSettings.bgColor;
-  const float fullScale = (float)dispSettings.powerScaleW;
+  const float fullScale = (fullScaleW > 0.0f) ? fullScaleW : (float)dispSettings.powerScaleW;
 
   float w = (active && watts > 0.0f) ? watts : 0.0f;
   float ratio = (fullScale > 0.0f) ? (w / fullScale) : 0.0f;

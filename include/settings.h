@@ -2,6 +2,7 @@
 #define SETTINGS_H
 
 #include <Arduino.h>
+#include "config.h"   // NUM_GAUGE_SLOTS
 
 // Per-gauge color config (RGB565). Mirrors the BambuHelper GaugeColors so the
 // reused gauge primitives in display_gauges.cpp compile unchanged.
@@ -9,6 +10,31 @@ struct GaugeColors {
   uint16_t arc;       // arc fill color
   uint16_t label;     // label text color
   uint16_t value;     // value text color
+};
+
+// Gauge rendering style for a configurable slot.
+enum GaugeType : uint8_t {
+  GAUGE_TYPE_AUTO    = 0,  // classify by the metric's unit at render time
+  GAUGE_TYPE_TEMP    = 1,  // raw value on a 0..scale arc, warn coloring (C)
+  GAUGE_TYPE_PERCENT = 2,  // 0..100 percent gauge (%)
+  GAUGE_TYPE_POWER   = 3,  // watts with W/kW readout, arc 0..scale (W)
+  GAUGE_TYPE_FAN     = 4,  // raw value on a 0..scale arc (RPM / generic)
+  GAUGE_TYPE_COUNT
+};
+
+// One configurable gauge slot. Binds a PC metric (STRICTLY by id, matching the
+// V2.1 protocol) to a screen position with a chosen gauge style, arc full-scale,
+// and accent color. The slot's label comes from the live metric name, so it
+// follows whatever the companion reports. Persisted as the NVS "gauges" blob.
+struct GaugeSlot {
+  uint8_t  metricId;   // PC metric id to show; 0 = slot empty
+  uint8_t  type;       // GaugeType
+  uint16_t scaleMax;   // arc full-scale; 0 = use the type default
+  uint16_t arcColor;   // arc + accent color (RGB565)
+};
+
+struct GaugeMapping {
+  GaugeSlot slots[NUM_GAUGE_SLOTS];
 };
 
 // Display customization. Trimmed to the fields the reused chassis (display_ui,
@@ -59,11 +85,13 @@ extern char wifiPass[65];
 extern uint8_t brightness;
 extern DisplaySettings dispSettings;
 extern NetworkSettings netSettings;
+extern GaugeMapping gaugeMap;
 
 void loadSettings();
 void saveSettings();
 void defaultDisplaySettings(DisplaySettings& ds);
 void defaultNetworkSettings(NetworkSettings& ns);
+void defaultGaugeMapping(GaugeMapping& gm);
 
 // RGB565 <-> HTML hex helpers (used by the web portal).
 uint16_t htmlToRgb565(const char* hex);

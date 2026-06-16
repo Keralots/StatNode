@@ -74,49 +74,141 @@ static void drawOtaScreen() {
 }
 
 // ---------------------------------------------------------------------------
-//  Monitor screen - auto-map the first metrics to a 2x2 gauge grid.
-//  Classification by unit; real configurable mapping is the web-portal step.
+//  Monitor screen - configurable metric->gauge mapping.
+//  Each of the NUM_GAUGE_SLOTS slots binds a PC metric (by id) to a gauge style,
+//  full-scale range, and color (gaugeMap, persisted in NVS, edited from the web
+//  portal). Slots are laid out in a responsive 3-column grid sized to the panel.
 // ---------------------------------------------------------------------------
-static void drawOneMetricGauge(const PcMetric& m, int16_t cx, int16_t cy,
-                               int16_t r, bool fr) {
-  const GaugeColors* gc = &dispSettings.gauge;
-  char unit0 = m.unit[0];
-
-  if (unit0 == 'C') {
-    drawTempGauge(tft, cx, cy, r, m.value, 0, (float)dispSettings.tempScaleMax,
-                  CLR_ORANGE, m.name, nullptr, fr, gc);
-  } else if (unit0 == 'W') {
-    drawPowerGauge(tft, cx, cy, r, m.value, true, m.name, fr);
-  } else if (unit0 == '%') {
-    uint8_t pct = (uint8_t)(m.value < 0 ? 0 : (m.value > 100 ? 100 : m.value));
-    drawFanGauge(tft, cx, cy, r, pct, CLR_GREEN, m.name, fr, gc);
-  } else {
-    // Unknown unit (RPM, MB, ...): show as a fan-style numeric gauge scaled to
-    // the value's own magnitude so the arc is still informative.
-    uint8_t pct = (uint8_t)(m.value < 0 ? 0 : (m.value > 100 ? 100 : m.value));
-    drawFanGauge(tft, cx, cy, r, pct, CLR_BLUE, m.name, fr, gc);
+static uint8_t classifyByUnit(const char* unit) {
+  switch (unit[0]) {
+    case 'C': return GAUGE_TYPE_TEMP;
+    case 'W': return GAUGE_TYPE_POWER;
+    case '%': return GAUGE_TYPE_PERCENT;
+    default:  return GAUGE_TYPE_FAN;   // RPM, MB, MHz, ... -> generic value gauge
   }
+}
+
+static void drawSlotGauge(const GaugeSlot& slot, const PcMetric& m,
+                          int16_t cx, int16_t cy, int16_t r, bool fr) {
+  uint8_t type = slot.type;
+  if (type == GAUGE_TYPE_AUTO || type >= GAUGE_TYPE_COUNT) type = classifyByUnit(m.unit);
+
+  // Accent both arc and label with the slot color; value keeps the default text
+  // color (the temp gauge recolors it to warnColor past the warn threshold).
+  GaugeColors gc = { slot.arcColor, slot.arcColor, CLR_TEXT };
+
+  switch (type) {
+    case GAUGE_TYPE_POWER: {
+      float scale = slot.scaleMax ? (float)slot.scaleMax : (float)dispSettings.powerScaleW;
+      drawPowerGauge(tft, cx, cy, r, m.value, true, m.name, fr, scale);
+      break;
+    }
+    case GAUGE_TYPE_PERCENT: {
+      uint8_t pct = (uint8_t)(m.value < 0 ? 0 : (m.value > 100 ? 100 : m.value));
+      drawFanGauge(tft, cx, cy, r, pct, slot.arcColor, m.name, fr, &gc);
+      break;
+    }
+    case GAUGE_TYPE_FAN: {
+      // Generic scaled value (RPM and friends): the temp gauge shows the raw
+      // reading in the center while the arc fills 0..scale.
+      float scale = slot.scaleMax ? (float)slot.scaleMax : (float)GAUGE_FAN_SCALE_DEFAULT;
+      drawTempGauge(tft, cx, cy, r, m.value, 0, scale, slot.arcColor, m.name, nullptr, fr, &gc);
+      break;
+    }
+    case GAUGE_TYPE_TEMP:
+    default: {
+      float scale = slot.scaleMax ? (float)slot.scaleMax : (float)dispSettings.tempScaleMax;
+      drawTempGauge(tft, cx, cy, r, m.value, 0, scale, slot.arcColor, m.name, nullptr, fr, &gc);
+      break;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Bottom info bar - the two facts the companion's stream actually carries:
+//  the LHM health status (as a colored dot + short label) and the PC's
+//  last-update time (packet timestamp). The protocol has no uptime/hostname
+//  field, so nothing else PC-side is shown here. Redraws only when content
+//  changes, so it does not flicker at the frame rate.
+// ---------------------------------------------------------------------------
+static void pcStatusLabel(uint8_t status, const char*& text, uint16_t& color) {
+  switch (status) {
+    case PC_STATUS_OK:              text = "OK";      color = CLR_GREEN;    break;
+    case PC_STATUS_API_ERROR:       text = "API err"; color = CLR_ORANGE;   break;
+    case PC_STATUS_LHM_NOT_RUNNING: text = "LHM off"; color = CLR_RED;      break;
+    case PC_STATUS_LHM_STARTING:    text = "LHM...";  color = CLR_YELLOW;   break;
+    default:                        text = "?";       color = CLR_TEXT_DIM; break;
+  }
+}
+
+static void drawBottomBar(int16_t barY, int16_t barH, int16_t w, bool fr) {
+  const char* statusText;
+  uint16_t dotColor;
+  pcStatusLabel(pcData.status, statusText, dotColor);
+  const char* ts = pcData.timestamp[0] ? pcData.timestamp : "--:--";
+
+  static uint8_t lastStatus = 0xFF;
+  static char    lastTs[6]  = "";
+  if (!fr && pcData.status == lastStatus && strcmp(ts, lastTs) == 0) return;
+  lastStatus = pcData.status;
+  strlcpy(lastTs, ts, sizeof(lastTs));
+
+  uint16_t bg = dispSettings.bgColor;
+  const int16_t cy = barY + barH / 2;
+
+  tft.startWrite();
+  tft.fillRect(0, barY, w, barH, bg);
+  tft.drawFastHLine(0, barY, w, dispSettings.trackColor);   // divider above bar
+
+  // Left: status dot + label.
+  const int16_t dotR = 4;
+  const int16_t dotX = 8 + dotR;
+  tft.fillCircle(dotX, cy, dotR, dotColor);
+  setFont(tft, FONT_SMALL);
+  tft.setTextDatum(ML_DATUM);
+  tft.setTextColor(CLR_TEXT_DIM, bg);
+  tft.drawString(statusText, dotX + dotR + 6, cy);
+
+  // Right: PC last-update time.
+  tft.setTextDatum(MR_DATUM);
+  tft.setTextColor(CLR_TEXT, bg);
+  tft.drawString(ts, w - 8, cy);
+  tft.endWrite();
 }
 
 static void drawMonitorScreen(bool fr) {
   const int16_t w = (int16_t)tft.width();
   const int16_t h = (int16_t)tft.height();
-  const int16_t r = LY_GAUGE_R;
-  const int16_t cx[4] = { (int16_t)(w / 4), (int16_t)(w - w / 4),
-                          (int16_t)(w / 4), (int16_t)(w - w / 4) };
-  const int16_t cy[4] = { (int16_t)(h / 3), (int16_t)(h / 3),
-                          (int16_t)(h - h / 3), (int16_t)(h - h / 3) };
 
-  uint8_t n = pcData.count;
-  if (n > 4) n = 4;
-  for (uint8_t i = 0; i < 4; i++) {
-    if (i < n) {
-      drawOneMetricGauge(pcData.metrics[i], cx[i], cy[i], r, fr);
+  // Reserve a slim strip at the bottom for the info bar; lay the gauge grid out
+  // in the remaining height so labels never collide with the bar.
+  const int16_t barH  = (h / 10 > 24) ? 24 : (int16_t)(h / 10);
+  const int16_t gridH = h - barH;
+
+  const int16_t cols = 3;
+  const int16_t rows = (NUM_GAUGE_SLOTS + cols - 1) / cols;
+  const int16_t cellW = w / cols;
+  const int16_t cellH = gridH / rows;
+
+  int16_t r = ((cellW < cellH ? cellW : cellH) / 2) - 8;
+  if (r < 12) r = 12;
+  if (r > 70) r = 70;   // cap so the value font stays readable on big panels
+
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+    int16_t cx = (i % cols) * cellW + cellW / 2;
+    int16_t cy = (i / cols) * cellH + cellH / 2;
+
+    const GaugeSlot& slot = gaugeMap.slots[i];
+    const PcMetric* m = (slot.metricId != 0) ? pcMetricFindById(slot.metricId) : nullptr;
+    if (m) {
+      drawSlotGauge(slot, *m, cx, cy, r, fr);
     } else if (fr) {
-      // Clear unused slots on a full redraw.
-      tft.fillCircle(cx[i], cy[i], r + 2, dispSettings.bgColor);
+      // Empty/unbound slot: clear it on a full redraw.
+      tft.fillCircle(cx, cy, r + 2, dispSettings.bgColor);
     }
   }
+
+  drawBottomBar(gridH, barH, w, fr);
 }
 
 static void drawOfflineScreen(bool fr) {
@@ -171,4 +263,15 @@ void updateDisplay() {
 
   forceRedraw = false;
   markFrameDirty();
+}
+
+// Force a clean full repaint on the next updateDisplay() without a screen-state
+// transition. Used after a live config change (e.g. saving the gauge mapping)
+// so the new layout/colors take effect without a reboot. Touches no pixels here
+// (the draw happens in the loop's updateDisplay), so it is safe to call from the
+// web-server handler.
+void forceDisplayRedraw() {
+  forceRedraw = true;
+  lastUpdate = 0;
+  resetGaugeTextCache();
 }

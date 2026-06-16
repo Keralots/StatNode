@@ -94,7 +94,13 @@
 #define GAUGE_POWER_SCALE_DEFAULT  300   // W (CPU/GPU package power gauge)
 #define GAUGE_POWER_SCALE_MIN       50
 #define GAUGE_POWER_SCALE_MAX      1000
+#define GAUGE_FAN_SCALE_DEFAULT   3000   // RPM full-scale for the generic fan/value gauge
 // Percent metrics (CPU/GPU load, RAM/VRAM usage) are always 0..100.
+
+// Configurable metric->gauge mapping: number of editable gauge slots laid out
+// in a responsive grid on the monitor screen. Each slot binds one PC metric
+// (by id) to a gauge style/range/color (see GaugeSlot in settings.h).
+#define NUM_GAUGE_SLOTS              6
 
 // =============================================================================
 //  Physical button

@@ -8,6 +8,7 @@ char wifiPass[65] = "";
 uint8_t brightness = 200;
 DisplaySettings dispSettings;
 NetworkSettings netSettings;
+GaugeMapping gaugeMap;
 
 static Preferences prefs;
 
@@ -36,6 +37,21 @@ void defaultDisplaySettings(DisplaySettings& ds) {
   ds.gauge    = { CLR_BLUE,  CLR_TEXT_DIM, CLR_TEXT };
 }
 
+void defaultGaugeMapping(GaugeMapping& gm) {
+  // Out-of-box mapping: bind metric ids 1..N to the slots and let each gauge
+  // auto-classify by the metric's unit (same behavior the renderer had before
+  // the mapping was configurable). The user overrides any slot from the portal.
+  static const uint16_t palette[NUM_GAUGE_SLOTS] = {
+    CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED
+  };
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+    gm.slots[i].metricId = i + 1;
+    gm.slots[i].type     = GAUGE_TYPE_AUTO;
+    gm.slots[i].scaleMax = 0;            // 0 = use the gauge type's default scale
+    gm.slots[i].arcColor = palette[i];
+  }
+}
+
 void defaultNetworkSettings(NetworkSettings& ns) {
   ns.useDHCP = true;
   ns.staticIP[0] = '\0';
@@ -58,6 +74,7 @@ void defaultNetworkSettings(NetworkSettings& ns) {
 void loadSettings() {
   defaultDisplaySettings(dispSettings);
   defaultNetworkSettings(netSettings);
+  defaultGaugeMapping(gaugeMap);
 
   prefs.begin(NVS_NAMESPACE, true);  // read-only
 
@@ -66,6 +83,9 @@ void loadSettings() {
   }
   if (prefs.getBytesLength("net") == sizeof(NetworkSettings)) {
     prefs.getBytes("net", &netSettings, sizeof(NetworkSettings));
+  }
+  if (prefs.getBytesLength("gauges") == sizeof(GaugeMapping)) {
+    prefs.getBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
   }
   prefs.getString("ssid", wifiSSID, sizeof(wifiSSID));
   prefs.getString("pass", wifiPass, sizeof(wifiPass));
@@ -78,6 +98,7 @@ void saveSettings() {
   prefs.begin(NVS_NAMESPACE, false);  // read-write
   prefs.putBytes("disp", &dispSettings, sizeof(DisplaySettings));
   prefs.putBytes("net", &netSettings, sizeof(NetworkSettings));
+  prefs.putBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("bright", brightness);
