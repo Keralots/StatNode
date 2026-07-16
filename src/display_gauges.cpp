@@ -983,7 +983,7 @@ void drawLayerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius
     bool useSmall = (digits > 7);
 
     fitValueFont(gfx, layerBuf, radius, thickness, useSmall ? FONT_BODY : LY_GAUGE_VALUE_FONT);
-    setGaugeClearedTextColor(gfx, CLR_TEXT, bg);
+    setGaugeClearedTextColor(gfx, dispSettings.clockTimeColor, bg);
     gfx.drawString(layerBuf, cx, hasTot ? (cy - 4 + LY_GAUGE_VALUE_NUDGE_Y) : cy);
 
     if (hasTot) {
@@ -1045,7 +1045,7 @@ void drawClockWidget(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radiu
 
     bool sm = dispSettings.smallLabels;
     setFont(gfx, sm ? FONT_SMALL : FONT_BODY);
-    gfx.setTextColor(CLR_TEXT_DIM, bg);
+    gfx.setTextColor(dispSettings.clockDateColor, bg);
     gfx.drawString("Clock", cx, cy + radius + (sm ? 3 : -1));
   }
 }

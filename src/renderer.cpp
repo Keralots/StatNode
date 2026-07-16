@@ -92,6 +92,7 @@ static uint8_t classifyByUnit(const char* unit) {
 }
 
 static void drawSlotGauge(const GaugeSlot& slot, const PcMetric& m,
+                          const char* label,
                           int16_t cx, int16_t cy, int16_t r, bool fr) {
   uint8_t type = slot.type;
   if (type == GAUGE_TYPE_AUTO || type >= GAUGE_TYPE_COUNT) type = classifyByUnit(m.unit);
@@ -103,25 +104,25 @@ static void drawSlotGauge(const GaugeSlot& slot, const PcMetric& m,
   switch (type) {
     case GAUGE_TYPE_POWER: {
       float scale = slot.scaleMax ? (float)slot.scaleMax : (float)dispSettings.powerScaleW;
-      drawPowerGauge(tft, cx, cy, r, m.value, true, m.name, fr, scale);
+      drawPowerGauge(tft, cx, cy, r, m.value, true, label, fr, scale);
       break;
     }
     case GAUGE_TYPE_PERCENT: {
       uint8_t pct = (uint8_t)(m.value < 0 ? 0 : (m.value > 100 ? 100 : m.value));
-      drawFanGauge(tft, cx, cy, r, pct, slot.arcColor, m.name, fr, &gc);
+      drawFanGauge(tft, cx, cy, r, pct, slot.arcColor, label, fr, &gc);
       break;
     }
     case GAUGE_TYPE_FAN: {
       // Generic scaled value (RPM and friends): the temp gauge shows the raw
       // reading in the center while the arc fills 0..scale.
       float scale = slot.scaleMax ? (float)slot.scaleMax : (float)GAUGE_FAN_SCALE_DEFAULT;
-      drawTempGauge(tft, cx, cy, r, m.value, 0, scale, slot.arcColor, m.name, nullptr, fr, &gc);
+      drawTempGauge(tft, cx, cy, r, m.value, 0, scale, slot.arcColor, label, nullptr, fr, &gc);
       break;
     }
     case GAUGE_TYPE_TEMP:
     default: {
       float scale = slot.scaleMax ? (float)slot.scaleMax : (float)dispSettings.tempScaleMax;
-      drawTempGauge(tft, cx, cy, r, m.value, 0, scale, slot.arcColor, m.name, nullptr, fr, &gc);
+      drawTempGauge(tft, cx, cy, r, m.value, 0, scale, slot.arcColor, label, nullptr, fr, &gc);
       break;
     }
   }
@@ -250,6 +251,7 @@ struct VisSlot {
   uint8_t slotIdx;           // index into gaugeMap.slots / pcHistory
   const GaugeSlot* slot;
   const PcMetric* metric;
+  const char* label;
 };
 
 // Bound slots whose metric is present in the live packet, in slot order.
@@ -263,6 +265,7 @@ static uint8_t collectVisibleSlots(VisSlot out[NUM_GAUGE_SLOTS]) {
     out[n].slotIdx = i;
     out[n].slot = &s;
     out[n].metric = m;
+    out[n].label = gaugeDisplayLabel(i, m->name);
     n++;
   }
   return n;
@@ -575,6 +578,7 @@ static void drawBigNumbersScreen(bool fr) {
     const int16_t y = (i / cols) * cellH;
     const PcMetric& m = *vis[i].metric;
     const GaugeSlot& s = *vis[i].slot;
+    const char* label = vis[i].label;
     const float scale = slotScaleMax(s, m);
     const float frac = slotFraction(m.value, scale);
     const bool warn = slotWarn(vis[i].slotIdx, m.value, scale);
@@ -583,7 +587,7 @@ static void drawBigNumbersScreen(bool fr) {
     snprintf(val, sizeof(val), "%.0f", m.value);
     char key[16];
     snprintf(key, sizeof(key), "%s%s", val, warn ? "!" : "");
-    if (!gaugeTextChanged(x + cellW / 2, y + cellH / 2, key, m.name, fr)) continue;
+    if (!gaugeTextChanged(x + cellW / 2, y + cellH / 2, key, label, fr)) continue;
 
     // No cell clear: every element overwrites itself opaquely, so only the
     // pixels that actually changed get repainted (no blink at packet rate).
@@ -591,8 +595,8 @@ static void drawBigNumbersScreen(bool fr) {
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(CLR_TEXT_DARK, bg);
     const int16_t labelY = y + (roomy ? 8 : 4);
-    tft.drawString(m.name, x + padX, labelY);
-    const int16_t lw = tft.textWidth(m.name);
+    tft.drawString(label, x + padX, labelY);
+    const int16_t lw = tft.textWidth(label);
     tft.fillRect(x + padX + lw, labelY, cellW - 2 * padX - lw, 14, bg);
 
     // Value (bottom-left, above the meter) + dim unit after it. The value
@@ -676,6 +680,7 @@ static void drawTilesScreen(bool fr) {
     const int16_t y = pad + (i / cols) * (cardH + gap);
     const PcMetric& m = *vis[i].metric;
     const GaugeSlot& s = *vis[i].slot;
+    const char* label = vis[i].label;
     const float scale = slotScaleMax(s, m);
     const bool warn = slotWarn(vis[i].slotIdx, m.value, scale);
     // The chart wears the slot's identity color unconditionally: a warn flip
@@ -686,7 +691,7 @@ static void drawTilesScreen(bool fr) {
     snprintf(val, sizeof(val), "%.0f", m.value);
     char key[16];
     snprintf(key, sizeof(key), "%s%s", val, warn ? "!" : "");
-    const bool head = gaugeTextChanged(x + cardW / 2, y, key, m.name, fr);
+    const bool head = gaugeTextChanged(x + cardW / 2, y, key, label, fr);
 
     // Card background only when something actually blanked the area - a
     // plain full redraw (preview capture, style save) repaints content
@@ -709,11 +714,11 @@ static void drawTilesScreen(bool fr) {
 
         const int16_t headCy = headH / 2 + 1;
         setFont(headSpr, FONT_SMALL);
-        const int16_t labelW = headSpr.textWidth(m.name);
+        const int16_t labelW = headSpr.textWidth(label);
         const int16_t unitW  = headSpr.textWidth(m.unit);
         headSpr.setTextDatum(ML_DATUM);
         headSpr.setTextColor(CLR_TEXT_DIM, CLR_CARD);
-        headSpr.drawString(m.name, 9, headCy);
+        headSpr.drawString(label, 9, headCy);
         headSpr.setTextDatum(MR_DATUM);
         headSpr.drawString(m.unit, cardW - 9, headCy);
 
@@ -740,11 +745,11 @@ static void drawTilesScreen(bool fr) {
         // Sprite unavailable: legacy direct path.
         const int16_t headCy = y + headH / 2 + 1;
         setFont(tft, FONT_SMALL);
-        const int16_t labelW = tft.textWidth(m.name);
+        const int16_t labelW = tft.textWidth(label);
         const int16_t unitW  = tft.textWidth(m.unit);
         tft.setTextDatum(ML_DATUM);
         tft.setTextColor(CLR_TEXT_DIM, CLR_CARD);
-        tft.drawString(m.name, x + 9, headCy);
+        tft.drawString(label, x + 9, headCy);
         tft.setTextDatum(MR_DATUM);
         tft.drawString(m.unit, x + cardW - 9, headCy);
         char probe[12];
@@ -808,6 +813,7 @@ static void drawHeroScreen(bool fr) {
   const int16_t heroH = (gridH * 2) / 5;
   const PcMetric& hm = *vis[0].metric;
   const GaugeSlot& hs = *vis[0].slot;
+  const char* heroLabel = vis[0].label;
   const float heroScale = slotScaleMax(hs, hm);
   const bool heroWarn = slotWarn(vis[0].slotIdx, hm.value, heroScale);
   const uint16_t heroColor = hs.arcColor;   // chart keeps identity; value carries warn
@@ -819,14 +825,14 @@ static void drawHeroScreen(bool fr) {
   char key[16];
   snprintf(key, sizeof(key), "%s%s", val, heroWarn ? "!" : "");
   // Anchor off-grid (3, heroH) so it can never collide with a row anchor.
-  if (gaugeTextChanged(3, heroH, key, hm.name, fr)) {
+  if (gaugeTextChanged(3, heroH, key, heroLabel, fr)) {
     const int16_t heroW = (n >= 2) ? (w / 2) : w;
 
     setFont(tft, FONT_SMALL);
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(CLR_TEXT_DARK, bg);
-    tft.drawString(hm.name, 12, 8);
-    const int16_t lw = tft.textWidth(hm.name);
+    tft.drawString(heroLabel, 12, 8);
+    const int16_t lw = tft.textWidth(heroLabel);
     tft.fillRect(12 + lw, 8, heroW - 24 - lw, 14, bg);
 
     setFont(tft, FONT_SMALL);
@@ -886,6 +892,7 @@ static void drawHeroScreen(bool fr) {
   for (uint8_t i = 1; i < n; i++) {
     const PcMetric& m = *vis[i].metric;
     const GaugeSlot& s = *vis[i].slot;
+    const char* label = vis[i].label;
     const float scale = slotScaleMax(s, m);
     const float frac = slotFraction(m.value, scale);
     const bool warn = slotWarn(vis[i].slotIdx, m.value, scale);
@@ -896,12 +903,12 @@ static void drawHeroScreen(bool fr) {
     snprintf(rv, sizeof(rv), "%.0f", m.value);
     char rkey[16];
     snprintf(rkey, sizeof(rkey), "%s%s", rv, warn ? "!" : "");
-    if (!gaugeTextChanged(w / 2, cy, rkey, m.name, fr)) continue;
+    if (!gaugeTextChanged(w / 2, cy, rkey, label, fr)) continue;
 
-    fitFontForWidth(m.name, bx - 18, rowLabelFont);
+    fitFontForWidth(label, bx - 18, rowLabelFont);
     tft.setTextDatum(ML_DATUM);
     tft.setTextColor(CLR_TEXT_DIM, bg);
-    tft.drawString(m.name, 12, cy);
+    tft.drawString(label, 12, cy);
 
     drawMeterBar(bx, cy - bh / 2, bw, bh, frac,
                  warn ? dispSettings.warnColor : s.arcColor);
@@ -936,7 +943,7 @@ static void drawMonitorScreen(bool fr) {
     const GaugeSlot& slot = gaugeMap.slots[i];
     const PcMetric* m = (slot.metricId != 0) ? pcMetricFindById(slot.metricId) : nullptr;
     if (m) {
-      drawSlotGauge(slot, *m, cx, cy, r, fr);
+      drawSlotGauge(slot, *m, gaugeDisplayLabel(i, m->name), cx, cy, r, fr);
     } else if (fr) {
       // Empty/unbound slot: clear it on a full redraw.
       tft.fillCircle(cx, cy, r + 2, dispSettings.bgColor);

@@ -37,6 +37,26 @@ struct GaugeMapping {
   GaugeSlot slots[NUM_GAUGE_SLOTS];
 };
 
+// Optional display names are stored separately from GaugeMapping so adding
+// them does not invalidate an existing metric layout after OTA. Empty means
+// use the live metric name reported by the companion.
+static const size_t GAUGE_LABEL_LENGTH = 17;  // 16 printable characters + NUL
+struct GaugeLabels {
+  char labels[NUM_GAUGE_SLOTS][GAUGE_LABEL_LENGTH];
+};
+
+// Backlight automation is also a separate versioned NVS blob. `brightness`
+// remains the normal daytime level for backwards compatibility.
+struct BacklightSettings {
+  uint8_t  version;
+  uint8_t  nightEnabled;
+  uint8_t  nightBrightness;
+  uint8_t  reserved;
+  uint16_t nightStartMinute;     // minute of day, 0..1439
+  uint16_t nightEndMinute;       // minute of day, 0..1439
+  uint16_t offlineSleepMinutes;  // 0 disables PC-offline sleep
+};
+
 // Monitor screen face. Selects how the bound metrics are rendered; all styles
 // share the same GaugeMapping slots (slot order = reading order, slot 1 = hero
 // in STYLE_HERO). Persisted as its own NVS scalar ("style"), NOT inside the
@@ -99,6 +119,8 @@ extern uint8_t brightness;
 extern DisplaySettings dispSettings;
 extern NetworkSettings netSettings;
 extern GaugeMapping gaugeMap;
+extern GaugeLabels gaugeLabels;
+extern BacklightSettings backlightSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
 extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
 
@@ -107,6 +129,13 @@ void saveSettings();
 void defaultDisplaySettings(DisplaySettings& ds);
 void defaultNetworkSettings(NetworkSettings& ns);
 void defaultGaugeMapping(GaugeMapping& gm);
+void defaultGaugeLabels(GaugeLabels& labels);
+void defaultBacklightSettings(BacklightSettings& bs);
+
+// Keep custom labels ASCII-only because the bundled display fonts do not
+// provide general UTF-8 glyph coverage. Leading/trailing spaces are removed.
+void sanitizeGaugeLabel(const char* in, char* out, size_t outSize);
+const char* gaugeDisplayLabel(uint8_t slotIndex, const char* fallback);
 
 // RGB565 <-> HTML hex helpers (used by the web portal).
 uint16_t htmlToRgb565(const char* hex);

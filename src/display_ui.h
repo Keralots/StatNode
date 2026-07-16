@@ -34,6 +34,14 @@ extern lgfx::Panel_AXS15231B_AGFX* g_axs_panel;
 
 void initDisplay();
 void setBacklight(uint8_t level);
+// Recompute the effective backlight from day/night scheduling and PC-offline
+// sleep. Call updateBacklightControl() from the main loop.
+void updateBacklightControl();
+void refreshBacklightControl();
+uint8_t currentBacklightLevel();
+bool nightBrightnessActive();
+bool offlineDisplaySleeping();
+bool backlightTimeValid();
 void applyDisplaySettings();  // re-apply rotation, bg, force redraw
 
 // Renderer (renderer.cpp): screen-state machine + per-frame draw. updateDisplay()

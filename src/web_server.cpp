@@ -1,7 +1,6 @@
-// Slim web server for PCMonitorColor: a status page, a WiFi config form, an
-// OTA upload endpoint (/ota/upload, same as BambuHelper), a JSON status API,
-// and captive-portal redirects for the AP setup flow. The full gauge/metric
-// configuration UI is added in the web-portal step.
+// PCMonitorColor web portal, JSON APIs, live screen capture, OTA update, and
+// captive-portal redirects. Static UI assets are streamed from PROGMEM in
+// bounded chunks so low-RAM boards never assemble the full page in heap.
 #include "web_server.h"
 #include "settings.h"
 #include "wifi_manager.h"
@@ -9,11 +8,13 @@
 #include "pc_metrics.h"
 #include "fonts.h"
 #include "config.h"
+#include "web_pages.h"
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <Update.h>
 #include "esp_ota_ops.h"
 #include <WiFi.h>
+#include <time.h>
 
 static WebServer server(80);
 
@@ -31,115 +32,262 @@ int         getOtaAutoProgress()  { return 0; }
 const char* getOtaAutoStatus()    { return otaError.c_str(); }
 
 // ---------------------------------------------------------------------------
-//  Gauge mapping config (per-slot metric / type / scale / color)
+//  Portal assets and JSON helpers
 // ---------------------------------------------------------------------------
-static const char* gaugeTypeName(uint8_t t) {
-  switch (t) {
-    case GAUGE_TYPE_AUTO:    return "Auto";
-    case GAUGE_TYPE_TEMP:    return "Temp";
-    case GAUGE_TYPE_PERCENT: return "Percent";
-    case GAUGE_TYPE_POWER:   return "Power";
-    case GAUGE_TYPE_FAN:     return "Fan";
-    default:                 return "?";
-  }
-}
-
-static const char* displayStyleName(uint8_t s) {
-  switch (s) {
-    case STYLE_RINGS:       return "Rings";
-    case STYLE_BIG_NUMBERS: return "Big numbers";
-    case STYLE_TILES:       return "Tiles + sparklines";
-    case STYLE_HERO:        return "Hero + list";
-    default:                return "?";
-  }
-}
-
-static void appendGaugesCard(String& html) {
-  html += "<div class='card'><b>Display</b>";
-
-  html += "<form method='POST' action='/save/gauges'>";
-  html += "<label>Style</label><select name='style'>";
-  for (uint8_t s = 0; s < STYLE_COUNT; s++) {
-    html += "<option value='" + String(s) + "'";
-    if (displayStyle == s) html += " selected";
-    html += ">" + String(displayStyleName(s)) + "</option>";
-  }
-  html += "</select>";
-  html += "<label>Chart refresh (seconds, 1-60)</label>";
-  html += "<input style='width:90px' type='number' min='1' max='60' name='sparks' value='" +
-          String(sparkRedrawSec) + "'>";
-
-  // Live list of metrics the companion is sending, so the user knows which ids
-  // are available to bind.
-  html += "<div style='font-size:12px;color:#9aa4ad;margin:6px 0'>Available metrics: ";
-  if (pcData.count == 0) {
-    html += "(none yet - start the PC companion)";
-  } else {
-    for (uint8_t i = 0; i < pcData.count; i++) {
-      const PcMetric& m = pcData.metrics[i];
-      html += String(m.id) + ":" + String(m.name) + " (" + String(m.unit) + ")";
-      if (i + 1 < pcData.count) html += ", ";
+static bool writeClientAll(WiFiClient& client, const uint8_t* data, size_t len) {
+  unsigned long lastProgress = millis();
+  while (len > 0 && client.connected()) {
+    size_t sent = client.write(data, len);
+    if (sent > 0) {
+      data += sent;
+      len -= sent;
+      lastProgress = millis();
+    } else {
+      if (millis() - lastProgress > 4000) return false;
+      delay(1);
     }
   }
-  html += "</div>";
+  return len == 0;
+}
 
-  html += "<table style='width:100%;border-collapse:collapse;font-size:13px'>";
-  html += "<tr style='color:#9aa4ad;text-align:left'>"
-          "<th>Slot</th><th>Metric</th><th>Type</th><th>Scale</th><th>Color</th><th></th></tr>";
+static void streamAsset(const char* data, size_t len, const char* contentType,
+                        const char* cacheControl) {
+  static const size_t CHUNK_SIZE = 2048;
+  uint8_t* chunk = (uint8_t*)malloc(CHUNK_SIZE);
+  if (!chunk) {
+    server.send(503, "text/plain", "Out of memory");
+    return;
+  }
 
-  char colBuf[8];
+  server.sendHeader("Cache-Control", cacheControl);
+  server.setContentLength(len);
+  server.send(200, contentType, "");
+  WiFiClient client = server.client();
+
+  bool ok = true;
+  for (size_t offset = 0; offset < len && ok; offset += CHUNK_SIZE) {
+    size_t count = min(CHUNK_SIZE, len - offset);
+    memcpy_P(chunk, data + offset, count);
+    ok = writeClientAll(client, chunk, count);
+    delay(0);
+  }
+  free(chunk);
+  if (!ok) client.stop();
+}
+
+static void handleRoot() {
+  streamAsset(PAGE_HTML, sizeof(PAGE_HTML) - 1, "text/html",
+              "no-cache, no-store, must-revalidate");
+}
+
+static void handlePortalCss() {
+  streamAsset(PORTAL_CSS, sizeof(PORTAL_CSS) - 1, "text/css",
+              "public, max-age=31536000, immutable");
+}
+
+static void handlePortalLayoutCss() {
+  streamAsset(PORTAL_LAYOUT_CSS, sizeof(PORTAL_LAYOUT_CSS) - 1, "text/css",
+              "public, max-age=31536000, immutable");
+}
+
+static void handlePortalJs() {
+  streamAsset(PORTAL_JS, sizeof(PORTAL_JS) - 1, "application/javascript",
+              "public, max-age=31536000, immutable");
+}
+
+static void sendJsonMessage(int status, bool ok, const char* message,
+                            bool restarting = false) {
+  JsonDocument doc;
+  doc["success"] = ok;
+  doc["message"] = message;
+  if (restarting) doc["restarting"] = true;
+  String out;
+  serializeJson(doc, out);
+  server.send(status, "application/json", out);
+}
+
+static long clampedArg(const char* name, long current, long minValue, long maxValue) {
+  if (!server.hasArg(name)) return current;
+  long value = server.arg(name).toInt();
+  if (value < minValue) value = minValue;
+  if (value > maxValue) value = maxValue;
+  return value;
+}
+
+static void addHtmlColor(JsonObject object, const char* key, uint16_t color) {
+  char buf[8];
+  rgb565ToHtml(color, buf);
+  object[key] = buf;
+}
+
+static void formatMinuteOfDay(uint16_t minute, char* out, size_t outSize) {
+  snprintf(out, outSize, "%02u:%02u", minute / 60, minute % 60);
+}
+
+static uint16_t minuteOfDayArg(const char* name, uint16_t current) {
+  if (!server.hasArg(name)) return current;
+  int hour = -1, minute = -1;
+  if (sscanf(server.arg(name).c_str(), "%d:%d", &hour, &minute) != 2)
+    return current;
+  if (hour < 0 || hour > 23 || minute < 0 || minute > 59) return current;
+  return (uint16_t)(hour * 60 + minute);
+}
+
+static void handleApiConfig() {
+  JsonDocument doc;
+  doc["product"] = PRODUCT_NAME;
+  doc["version"] = FW_VERSION;
+  doc["board"] = BOARD_VARIANT;
+  doc["ip"] = WiFi.localIP().toString();
+#if defined(DISPLAY_CYD)
+  doc["isCyd"] = true;
+#else
+  doc["isCyd"] = false;
+#endif
+
+  JsonObject display = doc["display"].to<JsonObject>();
+  display["style"] = displayStyle;
+  display["rotation"] = dispSettings.rotation;
+  display["brightness"] = brightness;
+  display["smoothing"] = dispSettings.gaugeSmoothing;
+  display["sparkSeconds"] = sparkRedrawSec;
+  display["tempScale"] = dispSettings.tempScaleMax;
+  display["powerScale"] = dispSettings.powerScaleW;
+  display["warnThreshold"] = dispSettings.warnThresholdPct;
+  display["smallLabels"] = dispSettings.smallLabels;
+  display["invertColors"] = dispSettings.invertColors;
+  display["cydClassic"] = dispSettings.cydPanelClassic;
+
+  JsonObject backlight = doc["backlight"].to<JsonObject>();
+  backlight["nightEnabled"] = backlightSettings.nightEnabled != 0;
+  backlight["nightBrightness"] = backlightSettings.nightBrightness;
+  char timeBuf[6];
+  formatMinuteOfDay(backlightSettings.nightStartMinute, timeBuf, sizeof(timeBuf));
+  backlight["nightStart"] = timeBuf;
+  formatMinuteOfDay(backlightSettings.nightEndMinute, timeBuf, sizeof(timeBuf));
+  backlight["nightEnd"] = timeBuf;
+  backlight["offlineSleepMinutes"] = backlightSettings.offlineSleepMinutes;
+
+  JsonObject colors = doc["colors"].to<JsonObject>();
+  addHtmlColor(colors, "bg", dispSettings.bgColor);
+  addHtmlColor(colors, "track", dispSettings.trackColor);
+  addHtmlColor(colors, "warn", dispSettings.warnColor);
+  addHtmlColor(colors, "clock", dispSettings.clockTimeColor);
+  addHtmlColor(colors, "date", dispSettings.clockDateColor);
+
+  JsonObject clock = doc["clock"].to<JsonObject>();
+  clock["use24h"] = netSettings.use24h;
+  clock["timezone"] = netSettings.timezoneStr;
+
+  JsonObject network = doc["network"].to<JsonObject>();
+  network["ssid"] = wifiSSID;
+  network["hostname"] = netSettings.hostname;
+  network["mdns"] = netSettings.mdnsEnabled;
+  network["showIp"] = netSettings.showIPAtStartup;
+  network["dhcp"] = netSettings.useDHCP;
+  network["staticIp"] = netSettings.staticIP;
+  network["gateway"] = netSettings.gateway;
+  network["subnet"] = netSettings.subnet;
+  network["dns"] = netSettings.dns;
+
+  JsonArray gauges = doc["gauges"].to<JsonArray>();
+  char colorBuf[8];
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    const GaugeSlot& s = gaugeMap.slots[i];
-    rgb565ToHtml(s.arcColor, colBuf);
-
-    html += "<tr><td>" + String(i + 1) + "</td>";
-    // Metric picker: live metrics by name; 0 = slot off. If the bound id is
-    // not in the current packet (companion off / rebind), keep it selectable.
-    html += "<td><select name='m" + String(i) + "'>";
-    html += "<option value='0'";
-    if (s.metricId == 0) html += " selected";
-    html += ">(off)</option>";
-    bool bound = (s.metricId == 0);
-    for (uint8_t k = 0; k < pcData.count; k++) {
-      const PcMetric& m = pcData.metrics[k];
-      html += "<option value='" + String(m.id) + "'";
-      if (s.metricId == m.id) { html += " selected"; bound = true; }
-      html += ">" + String(m.id) + ": " + String(m.name) + " (" + String(m.unit) + ")</option>";
-    }
-    if (!bound) {
-      html += "<option value='" + String(s.metricId) + "' selected>id " +
-              String(s.metricId) + " (offline)</option>";
-    }
-    html += "</select></td>";
-    // Type select
-    html += "<td><select name='t" + String(i) + "'>";
-    for (uint8_t t = 0; t < GAUGE_TYPE_COUNT; t++) {
-      html += "<option value='" + String(t) + "'";
-      if (s.type == t) html += " selected";
-      html += ">" + String(gaugeTypeName(t)) + "</option>";
-    }
-    html += "</select></td>";
-    // Scale (0 = type default)
-    html += "<td><input style='width:70px' type='number' min='0' max='65535' name='s" + String(i) +
-            "' value='" + String(s.scaleMax) + "' placeholder='auto'></td>";
-    // Color
-    html += "<td><input type='color' name='c" + String(i) + "' value='" + String(colBuf) + "'></td>";
-    // Reorder (swaps the whole row's values client-side; save to apply)
-    html += "<td style='white-space:nowrap'>"
-            "<button type='button' class='mv' onclick='mv(" + String(i) + ",-1)'>&#9650;</button>"
-            "<button type='button' class='mv' onclick='mv(" + String(i) + ",1)'>&#9660;</button></td>";
-    html += "</tr>";
+    JsonObject slot = gauges.add<JsonObject>();
+    slot["metricId"] = gaugeMap.slots[i].metricId;
+    slot["type"] = gaugeMap.slots[i].type;
+    slot["scaleMax"] = gaugeMap.slots[i].scaleMax;
+    slot["label"] = gaugeLabels.labels[i];
+    rgb565ToHtml(gaugeMap.slots[i].arcColor, colorBuf);
+    slot["color"] = colorBuf;
   }
-  html += "</table>";
-  html += "<small>Metric id binds the slot to a PC sensor by id (0 = off). "
-          "Scale 0 = type default. Auto picks the gauge style from the unit. "
-          "Slot order is the reading order in every style; slot 1 is the hero.</small><br>";
-  html += "<button type='submit'>Save display</button></form></div>";
+
+  JsonArray metrics = doc["metrics"].to<JsonArray>();
+  for (uint8_t i = 0; i < pcData.count; i++) {
+    JsonObject metric = metrics.add<JsonObject>();
+    metric["id"] = pcData.metrics[i].id;
+    metric["name"] = pcData.metrics[i].name;
+    metric["value"] = pcData.metrics[i].value;
+    metric["unit"] = pcData.metrics[i].unit;
+  }
+
+  String out;
+  serializeJson(doc, out);
+  server.send(200, "application/json", out);
 }
 
 // ---------------------------------------------------------------------------
-//  Display colors (bg/track/warn/clock pickers + one-click presets)
+//  Save handlers
 // ---------------------------------------------------------------------------
+static void handleSaveDisplay() {
+  bool panelChanged = false;
+  displayStyle = (uint8_t)clampedArg("style", displayStyle, 0, STYLE_COUNT - 1);
+  dispSettings.rotation = (uint8_t)clampedArg("rotation", dispSettings.rotation, 0, 3);
+  brightness = (uint8_t)clampedArg("brightness", brightness, 0, 255);
+  dispSettings.gaugeSmoothing = (uint8_t)clampedArg("smoothing", dispSettings.gaugeSmoothing, 0, 3);
+  sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
+  dispSettings.tempScaleMax = (uint16_t)clampedArg("tempScale", dispSettings.tempScaleMax, 1, 500);
+  dispSettings.powerScaleW = (uint16_t)clampedArg("powerScale", dispSettings.powerScaleW, 1, 65535);
+  dispSettings.warnThresholdPct = (uint8_t)clampedArg("warnThreshold", dispSettings.warnThresholdPct, 0, 100);
+  dispSettings.smallLabels = server.hasArg("smallLabels");
+  dispSettings.invertColors = server.hasArg("invertColors");
+  backlightSettings.nightEnabled = server.hasArg("nightEnabled") ? 1 : 0;
+  backlightSettings.nightBrightness =
+    (uint8_t)clampedArg("nightBrightness", backlightSettings.nightBrightness, 0, 255);
+  backlightSettings.nightStartMinute =
+    minuteOfDayArg("nightStart", backlightSettings.nightStartMinute);
+  backlightSettings.nightEndMinute =
+    minuteOfDayArg("nightEnd", backlightSettings.nightEndMinute);
+  backlightSettings.offlineSleepMinutes =
+    (uint16_t)clampedArg("offlineSleep", backlightSettings.offlineSleepMinutes, 0, 1440);
+#if defined(DISPLAY_CYD)
+  bool cydClassic = server.hasArg("cydClassic");
+  panelChanged = cydClassic != dispSettings.cydPanelClassic;
+  dispSettings.cydPanelClassic = cydClassic;
+#endif
+
+  saveSettings();
+  refreshBacklightControl();
+  applyDisplaySettings();
+  markScreenCleared();
+  forceDisplayRedraw();
+  sendJsonMessage(200, true,
+                  panelChanged ? "Display saved. Restarting for the panel change."
+                               : "Display settings applied.",
+                  panelChanged);
+  if (panelChanged) scheduleRestart(1500);
+}
+
+static void handleSaveGauges() {
+  // Keep style and chart cadence accepted here for backwards compatibility
+  // with existing scripts that posted them to /save/gauges.
+  if (server.hasArg("style"))
+    displayStyle = (uint8_t)clampedArg("style", displayStyle, 0, STYLE_COUNT - 1);
+  if (server.hasArg("sparks"))
+    sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
+
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+    GaugeSlot& slot = gaugeMap.slots[i];
+    char key[4];
+    snprintf(key, sizeof(key), "m%u", i);
+    slot.metricId = (uint8_t)clampedArg(key, slot.metricId, 0, MAX_METRICS);
+    snprintf(key, sizeof(key), "t%u", i);
+    slot.type = (uint8_t)clampedArg(key, slot.type, 0, GAUGE_TYPE_COUNT - 1);
+    snprintf(key, sizeof(key), "s%u", i);
+    slot.scaleMax = (uint16_t)clampedArg(key, slot.scaleMax, 0, 65535);
+    snprintf(key, sizeof(key), "c%u", i);
+    if (server.hasArg(key)) slot.arcColor = htmlToRgb565(server.arg(key).c_str());
+    snprintf(key, sizeof(key), "l%u", i);
+    if (server.hasArg(key)) {
+      sanitizeGaugeLabel(server.arg(key).c_str(), gaugeLabels.labels[i],
+                         sizeof(gaugeLabels.labels[i]));
+    }
+  }
+  saveSettings();
+  forceDisplayRedraw();
+  sendJsonMessage(200, true, "Metric layout applied.");
+}
+
 struct ColorPreset {
   const char* id;
   uint16_t bg, track, warn, clockTime, clockDate;
@@ -155,32 +303,6 @@ static const ColorPreset kPresets[] = {
     { 0x3C3C /*#3987E5*/, 0x0400 /*#008300*/, 0xD290 /*#D55181*/,
       0xCC20 /*#C98500*/, 0x1CEE /*#199E70*/, 0xDAC4 /*#D95926*/ } },
 };
-
-static void appendColorsCard(String& html) {
-  char buf[8];
-  html += "<div class='card'><b>Colors</b>";
-  html += "<form method='POST' action='/save/colors'>";
-  html += "<label>Preset</label><select name='preset'>";
-  html += "<option value='' selected>(custom - use the pickers below)</option>";
-  html += "<option value='default'>Factory default</option>";
-  html += "<option value='modern'>Modern (colorblind-safe)</option>";
-  html += "</select>";
-  html += "<table style='font-size:13px'><tr>";
-  rgb565ToHtml(dispSettings.bgColor, buf);
-  html += "<td>Background<br><input type='color' name='cbg' value='" + String(buf) + "'></td>";
-  rgb565ToHtml(dispSettings.trackColor, buf);
-  html += "<td>Track<br><input type='color' name='ctrack' value='" + String(buf) + "'></td>";
-  rgb565ToHtml(dispSettings.warnColor, buf);
-  html += "<td>Warn<br><input type='color' name='cwarn' value='" + String(buf) + "'></td>";
-  rgb565ToHtml(dispSettings.clockTimeColor, buf);
-  html += "<td>Clock<br><input type='color' name='cct' value='" + String(buf) + "'></td>";
-  rgb565ToHtml(dispSettings.clockDateColor, buf);
-  html += "<td>Date<br><input type='color' name='ccd' value='" + String(buf) + "'></td>";
-  html += "</tr></table>";
-  html += "<small>A preset overwrites these pickers AND the six slot colors in "
-          "one save; leave it on custom to apply the pickers only.</small><br>";
-  html += "<button type='submit'>Save colors</button></form></div>";
-}
 
 static void handleSaveColors() {
   const String pre = server.arg("preset");
@@ -207,138 +329,79 @@ static void handleSaveColors() {
   applyDisplaySettings();   // repaints the panel with the new background
   markScreenCleared();      // styles must repaint their static chrome
   forceDisplayRedraw();
-  server.sendHeader("Location", "/");
-  server.send(303, "text/plain", "Saved");
+  sendJsonMessage(200, true, "Color palette applied.");
 }
 
-// ---------------------------------------------------------------------------
-//  Status page
-// ---------------------------------------------------------------------------
-static void appendPreviewCard(String& html) {
-  html += "<div class='card'><b>Device preview</b><br>";
-  html += "<img id='scr' src='/screen.bmp' width='240' "
-          "style='margin-top:8px;border:1px solid #2b3036;border-radius:8px;"
-          "image-rendering:pixelated'>";
-  html += "<br><label style='display:inline'><input type='checkbox' id='auto' checked "
-          "style='width:auto'> Auto-refresh</label></div>";
+static void handleSaveClock() {
+  netSettings.use24h = server.arg("timeFormat") != "12";
+  if (server.hasArg("timezone"))
+    strlcpy(netSettings.timezoneStr, server.arg("timezone").c_str(),
+            sizeof(netSettings.timezoneStr));
+  saveSettings();
+  configTzTime(netSettings.timezoneStr, "pool.ntp.org", "time.nist.gov");
+  refreshBacklightControl();
+  forceDisplayRedraw();
+  sendJsonMessage(200, true, "Clock settings applied.");
 }
 
-static void handleRoot() {
-  String ip = WiFi.localIP().toString();
-  String html;
-  html.reserve(8192);
-  html += "<!DOCTYPE html><html><head><meta charset='UTF-8'>";
-  html += "<meta name='viewport' content='width=device-width,initial-scale=1'>";
-  html += "<title>" PRODUCT_NAME "</title><style>";
-  html += "body{font-family:system-ui,sans-serif;background:#15181c;color:#e6e6e6;margin:0;padding:16px}";
-  html += "h1{font-size:20px;color:#3FB57A}.card{background:#1f2329;border:1px solid #2b3036;border-radius:10px;padding:14px;margin:12px 0}";
-  html += "label{display:block;margin:8px 0 4px;font-size:13px;color:#9aa4ad}";
-  html += "input{width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid #2b3036;background:#15181c;color:#e6e6e6}";
-  html += "button{margin-top:10px;padding:9px 14px;border:0;border-radius:6px;background:#3FB57A;color:#08130c;font-weight:600;cursor:pointer}";
-  html += "select,input[type=number]{padding:6px;border-radius:6px;border:1px solid #2b3036;background:#15181c;color:#e6e6e6}";
-  html += "td,th{padding:4px 6px}small{color:#778}";
-  html += "button.mv{margin:0 1px;padding:4px 7px;background:#2b3036;color:#9aa4ad}";
-  html += "</style></head><body>";
-  html += "<h1>" PRODUCT_NAME " " FW_VERSION "</h1>";
-
-  html += "<div class='card'><b>Status</b><br>";
-  html += "Board: " BOARD_VARIANT "<br>";
-  html += "IP: " + ip + "<br>";
-  html += "PC: " + String(pcData.online ? "online" : "offline");
-  html += " (" + String(pcData.count) + " metrics)";
-  if (pcData.timestamp[0]) html += " @ " + String(pcData.timestamp);
-  html += "</div>";
-
-  html += "<div class='card'><b>WiFi</b><form method='POST' action='/save/wifi'>";
-  html += "<label>SSID</label><input name='ssid' value='" + String(wifiSSID) + "'>";
-  html += "<label>Password</label><input name='pass' type='password' placeholder='(unchanged)'>";
-  html += "<button type='submit'>Save &amp; reboot</button></form></div>";
-
-  appendPreviewCard(html);
-  appendGaugesCard(html);
-  appendColorsCard(html);
-
-  html += "<div class='card'><b>Firmware update</b>";
-  html += "<form method='POST' action='/ota/upload' enctype='multipart/form-data'>";
-  html += "<input type='file' name='firmware' accept='.bin'>";
-  html += "<button type='submit'>Upload &amp; flash</button></form>";
-  html += "<small>POST a .bin to /ota/upload</small></div>";
-
-  // Preview auto-refresh + slot reorder (swaps row values; Save applies).
-  // Preview refresh is double-buffered: load into an offscreen Image and swap
-  // src only when complete, otherwise the browser blanks the img for the 1-2 s
-  // the ESP32 needs to stream the BMP and the preview "jumps" every cycle.
-  html += "<script>"
-          "var busy=false;"
-          "setInterval(function(){var a=document.getElementById('auto');"
-          "if(a&&a.checked&&!busy){busy=true;var n=new Image();"
-          "n.onload=function(){document.getElementById('scr').src=n.src;busy=false;};"
-          "n.onerror=function(){busy=false;};"
-          "n.src='/screen.bmp?t='+Date.now();}},5000);"
-          "function mv(i,d){var j=i+d;if(j<0||j>=" + String(NUM_GAUGE_SLOTS) + ")return;"
-          "['m','t','s','c'].forEach(function(p){"
-          "var A=document.getElementsByName(p+i)[0],B=document.getElementsByName(p+j)[0];"
-          "var v=A.value;A.value=B.value;B.value=v;});}"
-          "</script>";
-  html += "</body></html>";
-  server.send(200, "text/html", html);
+static bool validIp(const String& value, bool allowEmpty = false) {
+  if (allowEmpty && value.length() == 0) return true;
+  IPAddress parsed;
+  return parsed.fromString(value);
 }
 
-static void handleSaveWifi() {
-  if (server.hasArg("ssid")) {
-    strlcpy(wifiSSID, server.arg("ssid").c_str(), sizeof(wifiSSID));
+static void handleSaveNetwork() {
+  String ssid = server.arg("ssid");
+  ssid.trim();
+  if (ssid.length() == 0 || ssid.length() > 32) {
+    sendJsonMessage(400, false, "WiFi network name must be 1 to 32 characters.");
+    return;
   }
-  // Only overwrite the password when a new one was actually entered.
-  if (server.hasArg("pass") && server.arg("pass").length() > 0) {
+
+  NetworkSettings next = netSettings;
+  next.useDHCP = server.arg("ipMode") != "static";
+  next.mdnsEnabled = server.hasArg("mdns");
+  next.showIPAtStartup = server.hasArg("showIp");
+  if (server.hasArg("hostname"))
+    sanitizeHostname(server.arg("hostname").c_str(), next.hostname, sizeof(next.hostname));
+
+  if (!next.useDHCP) {
+    String ip = server.arg("staticIp"); ip.trim();
+    String gateway = server.arg("gateway"); gateway.trim();
+    String subnet = server.arg("subnet"); subnet.trim();
+    String dns = server.arg("dns"); dns.trim();
+    if (!validIp(ip) || !validIp(gateway) || !validIp(subnet) || !validIp(dns, true)) {
+      sendJsonMessage(400, false, "Enter valid IPv4 values for the static network configuration.");
+      return;
+    }
+    strlcpy(next.staticIP, ip.c_str(), sizeof(next.staticIP));
+    strlcpy(next.gateway, gateway.c_str(), sizeof(next.gateway));
+    strlcpy(next.subnet, subnet.c_str(), sizeof(next.subnet));
+    strlcpy(next.dns, dns.c_str(), sizeof(next.dns));
+  }
+
+  strlcpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID));
+  if (server.hasArg("pass") && server.arg("pass").length() > 0)
     strlcpy(wifiPass, server.arg("pass").c_str(), sizeof(wifiPass));
-  }
+  netSettings = next;
   saveSettings();
-  server.send(200, "text/html",
-    "<!DOCTYPE html><meta http-equiv='refresh' content='4;url=/'>"
-    "<body style='font-family:sans-serif;background:#15181c;color:#e6e6e6'>"
-    "Saved. Rebooting...</body>");
-  scheduleRestart(1200);
+  sendJsonMessage(200, true, "Network settings saved. Device is restarting.", true);
+  scheduleRestart(1500);
 }
 
-static void handleSaveGauges() {
-  if (server.hasArg("style")) {
-    long v = server.arg("style").toInt();
-    if (v >= 0 && v < STYLE_COUNT) displayStyle = (uint8_t)v;
+static void handleSaveWifiLegacy() {
+  String ssid = server.arg("ssid");
+  ssid.trim();
+  if (ssid.length() == 0 || ssid.length() > 32) {
+    sendJsonMessage(400, false, "WiFi network name must be 1 to 32 characters.");
+    return;
   }
-  if (server.hasArg("sparks")) {
-    long v = server.arg("sparks").toInt();
-    if (v >= 1 && v <= 60) sparkRedrawSec = (uint8_t)v;
-  }
-  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    GaugeSlot& s = gaugeMap.slots[i];
-    char key[4];
-
-    snprintf(key, sizeof(key), "m%u", i);
-    if (server.hasArg(key)) {
-      long v = server.arg(key).toInt();
-      if (v < 0) v = 0;
-      if (v > MAX_METRICS) v = MAX_METRICS;
-      s.metricId = (uint8_t)v;
-    }
-    snprintf(key, sizeof(key), "t%u", i);
-    if (server.hasArg(key)) {
-      long t = server.arg(key).toInt();
-      if (t >= 0 && t < GAUGE_TYPE_COUNT) s.type = (uint8_t)t;
-    }
-    snprintf(key, sizeof(key), "s%u", i);
-    if (server.hasArg(key)) {
-      long v = server.arg(key).toInt();
-      if (v < 0) v = 0;
-      if (v > 65535) v = 65535;
-      s.scaleMax = (uint16_t)v;
-    }
-    snprintf(key, sizeof(key), "c%u", i);
-    if (server.hasArg(key)) s.arcColor = htmlToRgb565(server.arg(key).c_str());
-  }
+  strlcpy(wifiSSID, ssid.c_str(), sizeof(wifiSSID));
+  if (server.hasArg("pass") && server.arg("pass").length() > 0)
+    strlcpy(wifiPass, server.arg("pass").c_str(), sizeof(wifiPass));
   saveSettings();
-  forceDisplayRedraw();   // apply the new mapping live, no reboot
-  server.sendHeader("Location", "/");
-  server.send(303, "text/plain", "Saved");
+  sendJsonMessage(200, true, "WiFi settings saved. Device is restarting.", true);
+  scheduleRestart(1500);
 }
 
 static void handleApiStatus() {
@@ -350,6 +413,10 @@ static void handleApiStatus() {
   doc["pc_online"] = pcData.online;
   doc["pc_status"] = pcData.status;
   doc["style"]     = displayStyle;
+  doc["backlight"] = currentBacklightLevel();
+  doc["night_active"] = nightBrightnessActive();
+  doc["offline_sleeping"] = offlineDisplaySleeping();
+  doc["time_valid"] = backlightTimeValid();
   doc["spark_sprite"] = sparkSpriteActive();
   doc["spark_fails"]  = sparkSpriteFails();
   doc["raw_n_changes"]      = rawNChanges();
@@ -360,6 +427,10 @@ static void handleApiStatus() {
   doc["max_block"]    = ESP.getMaxAllocHeap();
   doc["metric_count"] = pcData.count;
   doc["timestamp"] = pcData.timestamp;
+  doc["hostname"] = netSettings.hostname;
+  doc["rssi"] = WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0;
+  doc["uptime_seconds"] = millis() / 1000UL;
+  doc["ap_mode"] = isAPMode();
   String out;
   serializeJson(doc, out);
   server.send(200, "application/json", out);
@@ -566,9 +637,16 @@ void initWebServer() {
   server.on("/canonical.html", HTTP_GET, handleCaptiveDetect);
 
   server.on("/", HTTP_GET, handleRoot);
-  server.on("/save/wifi", HTTP_POST, handleSaveWifi);
+  server.on("/portal.css", HTTP_GET, handlePortalCss);
+  server.on("/portal-layout.css", HTTP_GET, handlePortalLayoutCss);
+  server.on("/portal.js", HTTP_GET, handlePortalJs);
+  server.on("/save/wifi", HTTP_POST, handleSaveWifiLegacy);
+  server.on("/save/display", HTTP_POST, handleSaveDisplay);
   server.on("/save/gauges", HTTP_POST, handleSaveGauges);
   server.on("/save/colors", HTTP_POST, handleSaveColors);
+  server.on("/save/clock", HTTP_POST, handleSaveClock);
+  server.on("/save/network", HTTP_POST, handleSaveNetwork);
+  server.on("/api/config", HTTP_GET, handleApiConfig);
   server.on("/api/status", HTTP_GET, handleApiStatus);
   server.on("/screen.bmp", HTTP_GET, handleScreenshot);
   server.on("/ota/upload", HTTP_POST, handleOtaFinish, handleOtaUpload);

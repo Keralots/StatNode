@@ -48,6 +48,7 @@ void loop() {
     setScreenState(SCREEN_MONITOR);
   }
 
+  updateBacklightControl();
   updateDisplay();
   flushFrame();
 }

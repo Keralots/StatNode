@@ -5,7 +5,9 @@
 #include "config.h"
 #include "layout.h"
 #include "settings.h"
+#include "pc_metrics.h"
 #include "fonts.h"
+#include <time.h>
 #include <new>   // placement new for CYD panel variant selection
 
 // The LGFX board device classes + the per-board `_tft_instance` live in their
@@ -59,12 +61,67 @@ static uint8_t sanitizeRotation(uint8_t r) { return r; }
 //  Backlight
 // ---------------------------------------------------------------------------
 static uint8_t lastAppliedBrightness = 0;
+static bool g_night_active = false;
+static bool g_offline_sleeping = false;
+static bool g_time_valid = false;
+static bool g_offline_tracking = false;
+static bool g_backlight_refresh = true;
+static uint32_t g_offline_since_ms = 0;
+static uint32_t g_last_backlight_check_ms = 0;
 
 void setBacklight(uint8_t level) {
 #if defined(BACKLIGHT_PIN) && BACKLIGHT_PIN >= 0
   analogWrite(BACKLIGHT_PIN, level);
 #endif
   lastAppliedBrightness = level;
+}
+
+uint8_t currentBacklightLevel() { return lastAppliedBrightness; }
+bool nightBrightnessActive() { return g_night_active; }
+bool offlineDisplaySleeping() { return g_offline_sleeping; }
+bool backlightTimeValid() { return g_time_valid; }
+
+void refreshBacklightControl() {
+  g_backlight_refresh = true;
+}
+
+void updateBacklightControl() {
+  const uint32_t nowMs = millis();
+  if (!g_backlight_refresh && nowMs - g_last_backlight_check_ms < 1000) return;
+  g_backlight_refresh = false;
+  g_last_backlight_check_ms = nowMs;
+
+  const ScreenState screen = getScreenState();
+  const bool sleepEligible = screen == SCREEN_MONITOR || screen == SCREEN_CLOCK;
+  if (!sleepEligible || pcData.online) {
+    g_offline_tracking = false;
+    g_offline_sleeping = false;
+  } else {
+    if (!g_offline_tracking) {
+      g_offline_tracking = true;
+      g_offline_since_ms = nowMs;
+    }
+    const uint32_t delayMs =
+      (uint32_t)backlightSettings.offlineSleepMinutes * 60000UL;
+    g_offline_sleeping = delayMs > 0 && nowMs - g_offline_since_ms >= delayMs;
+  }
+
+  const time_t epoch = time(nullptr);
+  g_time_valid = epoch >= 1609459200;  // 2021-01-01, safely past an unsynced epoch
+  g_night_active = false;
+  if (backlightSettings.nightEnabled && g_time_valid) {
+    struct tm localTime;
+    localtime_r(&epoch, &localTime);
+    const uint16_t minute = localTime.tm_hour * 60 + localTime.tm_min;
+    const uint16_t start = backlightSettings.nightStartMinute;
+    const uint16_t end = backlightSettings.nightEndMinute;
+    if (start < end) g_night_active = minute >= start && minute < end;
+    else if (start > end) g_night_active = minute >= start || minute < end;
+  }
+
+  uint8_t target = g_night_active ? backlightSettings.nightBrightness : brightness;
+  if (g_offline_sleeping) target = 0;
+  if (target != lastAppliedBrightness) setBacklight(target);
 }
 
 #if defined(DISPLAY_CYD)
@@ -143,7 +200,7 @@ void initDisplay() {
 
 #if defined(BACKLIGHT_PIN) && BACKLIGHT_PIN >= 0
   pinMode(BACKLIGHT_PIN, OUTPUT);
-  setBacklight(200);
+  setBacklight(brightness);
 #endif
 
   // Splash screen - center on the active canvas.

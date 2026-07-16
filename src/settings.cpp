@@ -9,10 +9,13 @@ uint8_t brightness = 200;
 DisplaySettings dispSettings;
 NetworkSettings netSettings;
 GaugeMapping gaugeMap;
+GaugeLabels gaugeLabels;
+BacklightSettings backlightSettings;
 uint8_t displayStyle = STYLE_RINGS;
 uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
 static Preferences prefs;
+static const uint8_t BACKLIGHT_SETTINGS_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 //  Defaults
@@ -54,6 +57,20 @@ void defaultGaugeMapping(GaugeMapping& gm) {
   }
 }
 
+void defaultGaugeLabels(GaugeLabels& labels) {
+  memset(&labels, 0, sizeof(labels));
+}
+
+void defaultBacklightSettings(BacklightSettings& bs) {
+  bs.version = BACKLIGHT_SETTINGS_VERSION;
+  bs.nightEnabled = 0;
+  bs.nightBrightness = 32;
+  bs.reserved = 0;
+  bs.nightStartMinute = 22 * 60;
+  bs.nightEndMinute = 7 * 60;
+  bs.offlineSleepMinutes = 0;
+}
+
 void defaultNetworkSettings(NetworkSettings& ns) {
   ns.useDHCP = true;
   ns.staticIP[0] = '\0';
@@ -77,6 +94,8 @@ void loadSettings() {
   defaultDisplaySettings(dispSettings);
   defaultNetworkSettings(netSettings);
   defaultGaugeMapping(gaugeMap);
+  defaultGaugeLabels(gaugeLabels);
+  defaultBacklightSettings(backlightSettings);
 
   prefs.begin(NVS_NAMESPACE, true);  // read-only
 
@@ -89,6 +108,14 @@ void loadSettings() {
   if (prefs.getBytesLength("gauges") == sizeof(GaugeMapping)) {
     prefs.getBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
   }
+  if (prefs.getBytesLength("labels") == sizeof(GaugeLabels)) {
+    prefs.getBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
+  }
+  if (prefs.getBytesLength("backlight") == sizeof(BacklightSettings)) {
+    BacklightSettings stored;
+    prefs.getBytes("backlight", &stored, sizeof(stored));
+    if (stored.version == BACKLIGHT_SETTINGS_VERSION) backlightSettings = stored;
+  }
   prefs.getString("ssid", wifiSSID, sizeof(wifiSSID));
   prefs.getString("pass", wifiPass, sizeof(wifiPass));
   brightness = prefs.getUChar("bright", 200);
@@ -97,6 +124,19 @@ void loadSettings() {
   sparkRedrawSec = prefs.getUChar("sparks", SPARK_REDRAW_MS / 1000);
   if (sparkRedrawSec < 1) sparkRedrawSec = 1;
   if (sparkRedrawSec > 60) sparkRedrawSec = 60;
+  backlightSettings.nightEnabled = backlightSettings.nightEnabled ? 1 : 0;
+  if (backlightSettings.nightStartMinute >= 24 * 60)
+    backlightSettings.nightStartMinute = 22 * 60;
+  if (backlightSettings.nightEndMinute >= 24 * 60)
+    backlightSettings.nightEndMinute = 7 * 60;
+  if (backlightSettings.offlineSleepMinutes > 24 * 60)
+    backlightSettings.offlineSleepMinutes = 24 * 60;
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+    gaugeLabels.labels[i][GAUGE_LABEL_LENGTH - 1] = '\0';
+    char cleaned[GAUGE_LABEL_LENGTH];
+    sanitizeGaugeLabel(gaugeLabels.labels[i], cleaned, sizeof(cleaned));
+    strlcpy(gaugeLabels.labels[i], cleaned, sizeof(gaugeLabels.labels[i]));
+  }
 
   prefs.end();
 }
@@ -106,12 +146,35 @@ void saveSettings() {
   prefs.putBytes("disp", &dispSettings, sizeof(DisplaySettings));
   prefs.putBytes("net", &netSettings, sizeof(NetworkSettings));
   prefs.putBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
+  prefs.putBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
+  prefs.putBytes("backlight", &backlightSettings, sizeof(BacklightSettings));
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("bright", brightness);
   prefs.putUChar("style", displayStyle);
   prefs.putUChar("sparks", sparkRedrawSec);
   prefs.end();
+}
+
+void sanitizeGaugeLabel(const char* in, char* out, size_t outSize) {
+  if (!out || outSize == 0) return;
+  out[0] = '\0';
+  if (!in) return;
+
+  while (*in == ' ') in++;
+  size_t written = 0;
+  for (; *in && written < outSize - 1; in++) {
+    const uint8_t c = (uint8_t)*in;
+    if (c >= 32 && c <= 126) out[written++] = (char)c;
+  }
+  while (written > 0 && out[written - 1] == ' ') written--;
+  out[written] = '\0';
+}
+
+const char* gaugeDisplayLabel(uint8_t slotIndex, const char* fallback) {
+  if (slotIndex < NUM_GAUGE_SLOTS && gaugeLabels.labels[slotIndex][0])
+    return gaugeLabels.labels[slotIndex];
+  return fallback ? fallback : "";
 }
 
 // ---------------------------------------------------------------------------
