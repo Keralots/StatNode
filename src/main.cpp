@@ -10,6 +10,7 @@
 #include "wifi_manager.h"
 #include "web_server.h"
 #include "pc_metrics.h"
+#include "touch_button.h"
 
 void setup() {
   Serial.begin(115200);
@@ -32,6 +33,7 @@ void setup() {
   initWiFi();                     // blocks until STA connects or AP comes up
   initWebServer();
   pcMetricsBegin();
+  initTouchButton();
 
   if (isWiFiConnected()) setScreenState(SCREEN_MONITOR);
 }
@@ -40,11 +42,13 @@ void loop() {
   handleWiFi();
   handleWebServer();
   pcMetricsHandle();
+  handleTouchButton();
 
-  // Once connected (and not mid-OTA / not in AP setup), show the monitor.
+  // Finish boot/connect transitions without overriding a touch-selected clock.
   ScreenState s = getScreenState();
   if (isWiFiConnected() &&
-      s != SCREEN_OTA_UPDATE && s != SCREEN_AP_MODE && s != SCREEN_MONITOR) {
+      (s == SCREEN_SPLASH || s == SCREEN_CONNECTING_WIFI ||
+       s == SCREEN_WIFI_CONNECTED)) {
     setScreenState(SCREEN_MONITOR);
   }
 

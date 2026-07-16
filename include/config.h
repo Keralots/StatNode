@@ -110,6 +110,9 @@
 #else
 #define BUTTON_DEFAULT_PIN    4       // default GPIO for physical button
 #endif
+#define TOUCH_DEBOUNCE_MS     50
+#define TOUCH_LONG_PRESS_MS  800
+#define TOUCH_WAKE_MS      30000
 
 // =============================================================================
 //  Display refresh

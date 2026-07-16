@@ -42,6 +42,10 @@ uint8_t currentBacklightLevel();
 bool nightBrightnessActive();
 bool offlineDisplaySleeping();
 bool backlightTimeValid();
+void setManualDisplayOff(bool off);
+bool manualDisplayOff();
+bool displaySleepingForTouch();
+void wakeDisplayFromTouch();
 void applyDisplaySettings();  // re-apply rotation, bg, force redraw
 
 // Renderer (renderer.cpp): screen-state machine + per-frame draw. updateDisplay()

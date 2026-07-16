@@ -6,6 +6,7 @@
 #include "wifi_manager.h"
 #include "display_ui.h"
 #include "pc_metrics.h"
+#include "touch_button.h"
 #include "fonts.h"
 #include "config.h"
 #include "web_pages.h"
@@ -168,6 +169,21 @@ static void handleApiConfig() {
   backlight["nightEnd"] = timeBuf;
   backlight["offlineSleepMinutes"] = backlightSettings.offlineSleepMinutes;
 
+  JsonObject touch = doc["touch"].to<JsonObject>();
+  touch["supported"] = touchInputSupported();
+  touch["enabled"] = touchSettings.enabled != 0;
+  touch["pin"] = touchSettings.pin;
+  touch["pinValid"] = touchPinValid();
+  touch["activeHigh"] = touchSettings.activeHigh != 0;
+  touch["shortAction"] = touchSettings.shortAction;
+  touch["longAction"] = touchSettings.longAction;
+  touch["styleMask"] = touchSettings.styleMask;
+  touch["rememberStyle"] = touchSettings.rememberStyle != 0;
+  JsonArray allowedPins = touch["allowedPins"].to<JsonArray>();
+  for (uint8_t pin = 0; pin <= 48; pin++) {
+    if (touchPinAllowed(pin)) allowedPins.add(pin);
+  }
+
   JsonObject colors = doc["colors"].to<JsonObject>();
   addHtmlColor(colors, "bg", dispSettings.bgColor);
   addHtmlColor(colors, "track", dispSettings.trackColor);
@@ -221,6 +237,33 @@ static void handleApiConfig() {
 // ---------------------------------------------------------------------------
 static void handleSaveDisplay() {
   bool panelChanged = false;
+  TouchSettings nextTouch = touchSettings;
+  const bool updateTouch = touchInputSupported();
+  if (updateTouch) {
+    nextTouch.enabled = server.hasArg("touchEnabled") ? 1 : 0;
+    nextTouch.pin = (uint8_t)clampedArg("touchPin", nextTouch.pin, 0, 48);
+    nextTouch.activeHigh = server.hasArg("touchActiveHigh") ? 1 : 0;
+    nextTouch.shortAction =
+      (uint8_t)clampedArg("touchShort", nextTouch.shortAction, 0, TOUCH_ACTION_COUNT - 1);
+    nextTouch.longAction =
+      (uint8_t)clampedArg("touchLong", nextTouch.longAction, 0, TOUCH_ACTION_COUNT - 1);
+    nextTouch.rememberStyle = server.hasArg("touchRemember") ? 1 : 0;
+    nextTouch.styleMask = 0;
+    for (uint8_t i = 0; i < STYLE_COUNT; i++) {
+      char key[16];
+      snprintf(key, sizeof(key), "touchStyle%u", i);
+      if (server.hasArg(key)) nextTouch.styleMask |= 1u << i;
+    }
+    if (!touchPinAllowed(nextTouch.pin)) {
+      sendJsonMessage(400, false, "That GPIO is reserved or unsupported on this board.");
+      return;
+    }
+    if (nextTouch.styleMask == 0) {
+      sendJsonMessage(400, false, "Select at least one layout for touch cycling.");
+      return;
+    }
+  }
+
   displayStyle = (uint8_t)clampedArg("style", displayStyle, 0, STYLE_COUNT - 1);
   dispSettings.rotation = (uint8_t)clampedArg("rotation", dispSettings.rotation, 0, 3);
   brightness = (uint8_t)clampedArg("brightness", brightness, 0, 255);
@@ -240,6 +283,7 @@ static void handleSaveDisplay() {
     minuteOfDayArg("nightEnd", backlightSettings.nightEndMinute);
   backlightSettings.offlineSleepMinutes =
     (uint16_t)clampedArg("offlineSleep", backlightSettings.offlineSleepMinutes, 0, 1440);
+  if (updateTouch) touchSettings = nextTouch;
 #if defined(DISPLAY_CYD)
   bool cydClassic = server.hasArg("cydClassic");
   panelChanged = cydClassic != dispSettings.cydPanelClassic;
@@ -247,6 +291,7 @@ static void handleSaveDisplay() {
 #endif
 
   saveSettings();
+  initTouchButton();
   refreshBacklightControl();
   applyDisplaySettings();
   markScreenCleared();
@@ -417,6 +462,14 @@ static void handleApiStatus() {
   doc["night_active"] = nightBrightnessActive();
   doc["offline_sleeping"] = offlineDisplaySleeping();
   doc["time_valid"] = backlightTimeValid();
+  doc["manual_display_off"] = manualDisplayOff();
+  doc["touch_supported"] = touchInputSupported();
+  doc["touch_enabled"] = touchSettings.enabled != 0;
+  doc["touch_pin_valid"] = touchPinValid();
+  doc["touch_pressed"] = touchInputPressed();
+  doc["touch_last_action"] = touchLastAction();
+  doc["touch_events"] = touchEventCount();
+  doc["touch_last_ms"] = touchLastEventMs();
   doc["spark_sprite"] = sparkSpriteActive();
   doc["spark_fails"]  = sparkSpriteFails();
   doc["raw_n_changes"]      = rawNChanges();

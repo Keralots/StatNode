@@ -11,11 +11,13 @@ NetworkSettings netSettings;
 GaugeMapping gaugeMap;
 GaugeLabels gaugeLabels;
 BacklightSettings backlightSettings;
+TouchSettings touchSettings;
 uint8_t displayStyle = STYLE_RINGS;
 uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
 static Preferences prefs;
 static const uint8_t BACKLIGHT_SETTINGS_VERSION = 1;
+static const uint8_t TOUCH_SETTINGS_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 //  Defaults
@@ -71,6 +73,17 @@ void defaultBacklightSettings(BacklightSettings& bs) {
   bs.offlineSleepMinutes = 0;
 }
 
+void defaultTouchSettings(TouchSettings& ts) {
+  ts.version = TOUCH_SETTINGS_VERSION;
+  ts.enabled = 0;
+  ts.pin = 3;
+  ts.activeHigh = 1;
+  ts.shortAction = TOUCH_ACTION_NEXT_STYLE;
+  ts.longAction = TOUCH_ACTION_TOGGLE_POWER;
+  ts.styleMask = (1u << STYLE_COUNT) - 1u;
+  ts.rememberStyle = 0;
+}
+
 void defaultNetworkSettings(NetworkSettings& ns) {
   ns.useDHCP = true;
   ns.staticIP[0] = '\0';
@@ -96,6 +109,7 @@ void loadSettings() {
   defaultGaugeMapping(gaugeMap);
   defaultGaugeLabels(gaugeLabels);
   defaultBacklightSettings(backlightSettings);
+  defaultTouchSettings(touchSettings);
 
   prefs.begin(NVS_NAMESPACE, true);  // read-only
 
@@ -116,6 +130,11 @@ void loadSettings() {
     prefs.getBytes("backlight", &stored, sizeof(stored));
     if (stored.version == BACKLIGHT_SETTINGS_VERSION) backlightSettings = stored;
   }
+  if (prefs.getBytesLength("touch") == sizeof(TouchSettings)) {
+    TouchSettings stored;
+    prefs.getBytes("touch", &stored, sizeof(stored));
+    if (stored.version == TOUCH_SETTINGS_VERSION) touchSettings = stored;
+  }
   prefs.getString("ssid", wifiSSID, sizeof(wifiSSID));
   prefs.getString("pass", wifiPass, sizeof(wifiPass));
   brightness = prefs.getUChar("bright", 200);
@@ -131,6 +150,16 @@ void loadSettings() {
     backlightSettings.nightEndMinute = 7 * 60;
   if (backlightSettings.offlineSleepMinutes > 24 * 60)
     backlightSettings.offlineSleepMinutes = 24 * 60;
+  touchSettings.enabled = touchSettings.enabled ? 1 : 0;
+  touchSettings.activeHigh = touchSettings.activeHigh ? 1 : 0;
+  touchSettings.rememberStyle = touchSettings.rememberStyle ? 1 : 0;
+  if (touchSettings.shortAction >= TOUCH_ACTION_COUNT)
+    touchSettings.shortAction = TOUCH_ACTION_NEXT_STYLE;
+  if (touchSettings.longAction >= TOUCH_ACTION_COUNT)
+    touchSettings.longAction = TOUCH_ACTION_TOGGLE_POWER;
+  touchSettings.styleMask &= (1u << STYLE_COUNT) - 1u;
+  if (touchSettings.styleMask == 0)
+    touchSettings.styleMask = (1u << STYLE_COUNT) - 1u;
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
     gaugeLabels.labels[i][GAUGE_LABEL_LENGTH - 1] = '\0';
     char cleaned[GAUGE_LABEL_LENGTH];
@@ -148,11 +177,18 @@ void saveSettings() {
   prefs.putBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
   prefs.putBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
   prefs.putBytes("backlight", &backlightSettings, sizeof(BacklightSettings));
+  prefs.putBytes("touch", &touchSettings, sizeof(TouchSettings));
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("bright", brightness);
   prefs.putUChar("style", displayStyle);
   prefs.putUChar("sparks", sparkRedrawSec);
+  prefs.end();
+}
+
+void saveDisplayStyle() {
+  prefs.begin(NVS_NAMESPACE, false);
+  prefs.putUChar("style", displayStyle);
   prefs.end();
 }
 

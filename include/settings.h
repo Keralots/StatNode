@@ -70,6 +70,28 @@ enum DisplayStyle : uint8_t {
   STYLE_COUNT
 };
 
+enum TouchAction : uint8_t {
+  TOUCH_ACTION_NONE         = 0,
+  TOUCH_ACTION_NEXT_STYLE   = 1,
+  TOUCH_ACTION_PREV_STYLE   = 2,
+  TOUCH_ACTION_TOGGLE_CLOCK = 3,
+  TOUCH_ACTION_TOGGLE_POWER = 4,
+  TOUCH_ACTION_COUNT
+};
+
+// TTP223 settings use their own versioned blob so adding touch support cannot
+// invalidate existing display or network configuration after OTA.
+struct TouchSettings {
+  uint8_t version;
+  uint8_t enabled;
+  uint8_t pin;
+  uint8_t activeHigh;
+  uint8_t shortAction;
+  uint8_t longAction;
+  uint8_t styleMask;
+  uint8_t rememberStyle;
+};
+
 // Display customization. Trimmed to the fields the reused chassis (display_ui,
 // display_gauges, display_anim) actually reads - the Bambu printer/AMS/Tasmota
 // fields are gone.
@@ -121,6 +143,7 @@ extern NetworkSettings netSettings;
 extern GaugeMapping gaugeMap;
 extern GaugeLabels gaugeLabels;
 extern BacklightSettings backlightSettings;
+extern TouchSettings touchSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
 extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
 
@@ -131,6 +154,8 @@ void defaultNetworkSettings(NetworkSettings& ns);
 void defaultGaugeMapping(GaugeMapping& gm);
 void defaultGaugeLabels(GaugeLabels& labels);
 void defaultBacklightSettings(BacklightSettings& bs);
+void defaultTouchSettings(TouchSettings& ts);
+void saveDisplayStyle();
 
 // Keep custom labels ASCII-only because the bundled display fonts do not
 // provide general UTF-8 glyph coverage. Leading/trailing spaces are removed.

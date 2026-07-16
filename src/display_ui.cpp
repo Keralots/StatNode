@@ -66,8 +66,10 @@ static bool g_offline_sleeping = false;
 static bool g_time_valid = false;
 static bool g_offline_tracking = false;
 static bool g_backlight_refresh = true;
+static bool g_manual_display_off = false;
 static uint32_t g_offline_since_ms = 0;
 static uint32_t g_last_backlight_check_ms = 0;
+static uint32_t g_touch_wake_until_ms = 0;
 
 void setBacklight(uint8_t level) {
 #if defined(BACKLIGHT_PIN) && BACKLIGHT_PIN >= 0
@@ -80,6 +82,22 @@ uint8_t currentBacklightLevel() { return lastAppliedBrightness; }
 bool nightBrightnessActive() { return g_night_active; }
 bool offlineDisplaySleeping() { return g_offline_sleeping; }
 bool backlightTimeValid() { return g_time_valid; }
+bool manualDisplayOff() { return g_manual_display_off; }
+bool displaySleepingForTouch() {
+  return g_manual_display_off || g_offline_sleeping;
+}
+
+void setManualDisplayOff(bool off) {
+  g_manual_display_off = off;
+  if (off) g_touch_wake_until_ms = 0;
+  refreshBacklightControl();
+}
+
+void wakeDisplayFromTouch() {
+  g_manual_display_off = false;
+  g_touch_wake_until_ms = millis() + TOUCH_WAKE_MS;
+  refreshBacklightControl();
+}
 
 void refreshBacklightControl() {
   g_backlight_refresh = true;
@@ -90,6 +108,10 @@ void updateBacklightControl() {
   if (!g_backlight_refresh && nowMs - g_last_backlight_check_ms < 1000) return;
   g_backlight_refresh = false;
   g_last_backlight_check_ms = nowMs;
+
+  const bool touchWakeActive = g_touch_wake_until_ms != 0 &&
+    (int32_t)(g_touch_wake_until_ms - nowMs) > 0;
+  if (!touchWakeActive) g_touch_wake_until_ms = 0;
 
   const ScreenState screen = getScreenState();
   const bool sleepEligible = screen == SCREEN_MONITOR || screen == SCREEN_CLOCK;
@@ -103,7 +125,8 @@ void updateBacklightControl() {
     }
     const uint32_t delayMs =
       (uint32_t)backlightSettings.offlineSleepMinutes * 60000UL;
-    g_offline_sleeping = delayMs > 0 && nowMs - g_offline_since_ms >= delayMs;
+    const bool sleepDue = delayMs > 0 && nowMs - g_offline_since_ms >= delayMs;
+    g_offline_sleeping = sleepDue && !touchWakeActive;
   }
 
   const time_t epoch = time(nullptr);
@@ -121,6 +144,7 @@ void updateBacklightControl() {
 
   uint8_t target = g_night_active ? backlightSettings.nightBrightness : brightness;
   if (g_offline_sleeping) target = 0;
+  if (g_manual_display_off) target = 0;
   if (target != lastAppliedBrightness) setBacklight(target);
 }
 
