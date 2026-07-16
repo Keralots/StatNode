@@ -70,6 +70,16 @@ enum DisplayStyle : uint8_t {
   STYLE_COUNT
 };
 
+// Idle clock face. Stored as its own NVS scalar ("clockface") so extending
+// the list cannot resize the legacy DisplaySettings blob and reset unrelated
+// display configuration after an OTA update.
+enum ClockFace : uint8_t {
+  CLOCK_FACE_STANDARD = 0,
+  CLOCK_FACE_BREAKOUT = 1,
+  CLOCK_FACE_MARIO = 2,
+  CLOCK_FACE_COUNT
+};
+
 enum TouchAction : uint8_t {
   TOUCH_ACTION_NONE         = 0,
   TOUCH_ACTION_NEXT_STYLE   = 1,
@@ -125,7 +135,7 @@ struct DisplaySettings {
   bool     smallLabels;       // use FONT_SMALL gauge labels instead of FONT_BODY
   bool     invertColors;      // invert display colors (panel-dependent fix)
   bool     cydPanelClassic;   // CYD only: plain Panel_ILI9341 (other hw revision)
-  bool     pongClock;         // Pong/Breakout animated idle clock
+  bool     pongClock;         // legacy Breakout selector, migrated to clockFace
   // Gauge full-scale ranges (arc maxima)
   uint16_t tempScaleMax;      // C (CPU/GPU temperature gauges)
   uint16_t powerScaleW;       // W (power gauge full-scale)
@@ -167,6 +177,7 @@ extern BacklightSettings backlightSettings;
 extern TouchSettings touchSettings;
 extern ThemeSettings themeSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
+extern uint8_t clockFace;      // ClockFace value
 extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
 
 void loadSettings();

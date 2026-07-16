@@ -8,6 +8,7 @@
 #include "display_ui.h"
 #include "display_gauges.h"
 #include "clock_mode.h"
+#include "clock_mario.h"
 #include "clock_pong.h"
 #include "pc_metrics.h"
 #include "settings.h"
@@ -36,6 +37,7 @@ void setScreenState(ScreenState state) {
   tft.fillScreen(dispSettings.bgColor);
   resetGaugeTextCache();
   resetClock();
+  resetMarioClock();
   resetPongClock();
   markScreenCleared();
   markFrameDirty();
@@ -210,6 +212,7 @@ static bool gScreenCleared = true;
 void markScreenCleared() {
   gScreenCleared = true;
   resetClock();
+  resetMarioClock();
   resetPongClock();
 }
 
@@ -1059,8 +1062,20 @@ static void drawMonitorStyled(bool fr) {
 }
 
 static void drawIdleClock() {
-  if (gCaptureRender) drawClockSnapshot();
-  else drawClock();
+  switch (clockFace) {
+    case CLOCK_FACE_BREAKOUT:
+      if (gCaptureRender) drawPongClockSnapshot();
+      else tickPongClock();
+      break;
+    case CLOCK_FACE_MARIO:
+      if (gCaptureRender) drawMarioClockSnapshot();
+      else tickMarioClock();
+      break;
+    default:
+      if (gCaptureRender) drawClockSnapshot();
+      else drawClock();
+      break;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1082,21 +1097,22 @@ void updateDisplay() {
     fr = true;
   }
 
-  // The Breakout face animates at 50 fps, so it must bypass the monitor
-  // renderer's slower update cadence. Screenshot renders use a stateless
-  // frame and never advance the live ball, paddle, bricks, or text caches.
+  // Animated clock faces bypass the monitor renderer's slower update cadence.
+  // Screenshot renderers are stateless and never advance the live animation.
   const bool idleVisible = currentScreen == SCREEN_CLOCK ||
                            (currentScreen == SCREEN_MONITOR && !pcData.online);
-  if (idleVisible && dispSettings.pongClock) {
+  const bool animatedClock = clockFace == CLOCK_FACE_BREAKOUT ||
+                             clockFace == CLOCK_FACE_MARIO;
+  if (idleVisible && animatedClock) {
     if (gCaptureRender) {
-      drawPongClockSnapshot();
+      drawIdleClock();
     } else {
       if (currentScreen == SCREEN_MONITOR && prevOnline) {
         tft.fillScreen(dispSettings.bgColor);
         resetGaugeTextCache();
         markScreenCleared();
       }
-      tickPongClock();
+      drawIdleClock();
       if (currentScreen == SCREEN_MONITOR) prevOnline = false;
     }
     forceRedraw = false;

@@ -198,7 +198,7 @@ static void handleApiConfig() {
   colors["tileTint"] = themeSettings.tileTintPct;
 
   JsonObject clock = doc["clock"].to<JsonObject>();
-  clock["face"] = dispSettings.pongClock ? 1 : 0;
+  clock["face"] = clockFace;
   clock["use24h"] = netSettings.use24h;
   clock["dateFormat"] = netSettings.dateFormat;
   clock["hideDate"] = dispSettings.hideClockDate;
@@ -429,7 +429,8 @@ static void handleSaveColors() {
 }
 
 static void handleSaveClock() {
-  dispSettings.pongClock = clampedArg("clockFace", dispSettings.pongClock ? 1 : 0, 0, 1) == 1;
+  clockFace = (uint8_t)clampedArg(
+    "clockFace", clockFace, CLOCK_FACE_STANDARD, CLOCK_FACE_COUNT - 1);
   netSettings.use24h = server.arg("timeFormat") != "12";
   netSettings.dateFormat = (uint8_t)clampedArg("dateFormat", netSettings.dateFormat, 0, 5);
   dispSettings.hideClockDate = server.hasArg("hideClockDate");
@@ -512,7 +513,11 @@ static void handleApiStatus() {
   doc["pc_online"] = pcData.online;
   doc["pc_status"] = pcData.status;
   doc["style"]     = displayStyle;
-  doc["clock_face"] = dispSettings.pongClock ? "breakout" : "standard";
+  switch (clockFace) {
+    case CLOCK_FACE_BREAKOUT: doc["clock_face"] = "breakout"; break;
+    case CLOCK_FACE_MARIO:    doc["clock_face"] = "mario"; break;
+    default:                  doc["clock_face"] = "standard"; break;
+  }
   doc["backlight"] = currentBacklightLevel();
   doc["night_active"] = nightBrightnessActive();
   doc["offline_sleeping"] = offlineDisplaySleeping();

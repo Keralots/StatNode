@@ -14,6 +14,7 @@ BacklightSettings backlightSettings;
 TouchSettings touchSettings;
 ThemeSettings themeSettings;
 uint8_t displayStyle = STYLE_RINGS;
+uint8_t clockFace = CLOCK_FACE_STANDARD;
 uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
 static Preferences prefs;
@@ -159,6 +160,10 @@ void loadSettings() {
   brightness = prefs.getUChar("bright", 200);
   displayStyle = prefs.getUChar("style", STYLE_RINGS);
   if (displayStyle >= STYLE_COUNT) displayStyle = STYLE_RINGS;
+  clockFace = prefs.getUChar(
+    "clockface", dispSettings.pongClock ? CLOCK_FACE_BREAKOUT : CLOCK_FACE_STANDARD);
+  if (clockFace >= CLOCK_FACE_COUNT) clockFace = CLOCK_FACE_STANDARD;
+  dispSettings.pongClock = clockFace == CLOCK_FACE_BREAKOUT;
   sparkRedrawSec = prefs.getUChar("sparks", SPARK_REDRAW_MS / 1000);
   if (sparkRedrawSec < 1) sparkRedrawSec = 1;
   if (sparkRedrawSec > 60) sparkRedrawSec = 60;
@@ -193,6 +198,9 @@ void loadSettings() {
 }
 
 void saveSettings() {
+  // Keep the old field coherent for downgrade compatibility. Mario maps to
+  // Standard on firmware versions that predate the dedicated scalar.
+  dispSettings.pongClock = clockFace == CLOCK_FACE_BREAKOUT;
   prefs.begin(NVS_NAMESPACE, false);  // read-write
   prefs.putBytes("disp", &dispSettings, sizeof(DisplaySettings));
   prefs.putBytes("net", &netSettings, sizeof(NetworkSettings));
@@ -205,6 +213,7 @@ void saveSettings() {
   prefs.putString("pass", wifiPass);
   prefs.putUChar("bright", brightness);
   prefs.putUChar("style", displayStyle);
+  prefs.putUChar("clockface", clockFace);
   prefs.putUChar("sparks", sparkRedrawSec);
   prefs.end();
 }
