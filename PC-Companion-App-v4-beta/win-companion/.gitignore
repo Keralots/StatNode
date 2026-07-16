@@ -1,0 +1,14 @@
+# PyInstaller build artifacts.
+build/
+dist/
+splash.png
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local runtime files (config + log live in %APPDATA% for the .exe, but the
+# dev script writes them next to this file)
+companion_config.json
+companion*.log
+*_backup.json
