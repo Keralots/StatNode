@@ -466,10 +466,10 @@ static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
 //  no longer covers get cleared - painting bg over bg is invisible, so the
 //  only pixels that visibly change are the ones that actually changed.
 // ---------------------------------------------------------------------------
-// Left-aligned baseline value + small dim unit after it. Caller has already
-// selected the value font (fitFontForWidth + scaleValueToCell); resets the
-// text size to 1.0 itself. bandH covers the tallest glyph box a previous draw
-// may have used (font scaling can shrink between draws).
+// Left-aligned value + a small dim unit centered against the value height.
+// Caller has already selected the value font (fitFontForWidth +
+// scaleValueToCell); resets the text size to 1.0 itself. bandH covers the
+// tallest glyph box a previous draw may have used.
 static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t bandH,
                              const char* val, const char* unit,
                              uint16_t fg, uint16_t bg, int16_t* prevVw) {
@@ -488,9 +488,11 @@ static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t ba
   if (bandW > vw) tft.fillRect(x + vw, baseY - fh, bandW - vw, fh, bg);
   if (unit && unit[0]) {
     setFont(tft, FONT_SMALL);
+    const int16_t unitFh = (int16_t)tft.fontHeight();
+    const int16_t unitBaseY = baseY - (fh - unitFh) / 2;
     tft.setTextDatum(BL_DATUM);
     tft.setTextColor(CLR_TEXT_DIM, bg);
-    tft.drawString(unit, x + vw + 5, baseY);
+    tft.drawString(unit, x + vw + 5, unitBaseY);
   }
   if (prevVw) *prevVw = vw;
 }
@@ -853,12 +855,13 @@ static void drawHeroScreen(bool fr) {
 
   if (fr) tft.drawFastHLine(8, heroH, w - 16, dispSettings.trackColor);
 
-  // Hero sparkline: right half of the band, or the whole lower area when the
-  // hero is the only metric.
+  // Hero sparkline: extend slightly into the center gap while preserving a
+  // clear margin after a three-digit hero value and its unit.
   if (sparkTick || fr) {
     if (n >= 2) {
-      drawSparkline(pcHistory[vis[0].slotIdx], vis[0].slotIdx, w / 2 + 6, 10,
-                    w - (w / 2 + 6) - 10, heroH - 20, heroColor, bg, sparkTick);
+      const int16_t graphX = w / 2 - 10;
+      drawSparkline(pcHistory[vis[0].slotIdx], vis[0].slotIdx, graphX, 10,
+                    w - graphX - 10, heroH - 20, heroColor, bg, sparkTick);
     } else {
       drawSparkline(pcHistory[vis[0].slotIdx], vis[0].slotIdx, 12, heroH + 8,
                     w - 24, gridH - heroH - 16, heroColor, bg, sparkTick);
@@ -867,28 +870,20 @@ static void drawHeroScreen(bool fr) {
 
   if (n < 2) return;
 
-  // Rows for the remaining metrics. Fonts grow when fewer rows share the
-  // space (unbind slots in the portal to get bigger text); the bar is short
-  // so the value zone can hold e.g. "1754 RPM" in a readable font.
+  // Rows for the remaining metrics. The bar begins closer to the labels and
+  // reaches farther right, leaving a stable value area at the panel edge.
   const int16_t rowsY0 = heroH + 2;
   const int16_t rowH = (gridH - rowsY0) / (n - 1);
-  const int16_t bx = (w * 30) / 100;
-  const int16_t bw = (w * 30) / 100;
+  const int16_t bx = w / 4;
+  const int16_t barRight = (w * 62) / 100;
+  const int16_t bw = barRight - bx;
+  const int16_t valueLeft = barRight + 3;
+  const int16_t valueRight = w - 4;
+  const int16_t rowValueW = valueRight - valueLeft;
   int16_t bh = rowH / 5;
   if (bh < 4) bh = 4;
   if (bh > 10) bh = 10;
   const FontID rowLabelFont = (rowH >= 24) ? FONT_BODY : FONT_SMALL;
-  // One shared value font for every row (the widest reading decides), so
-  // "1754 RPM" next to "36 %" does not render in two different sizes.
-  FontID rowValueFont = (rowH >= 34) ? FONT_LARGE : FONT_BODY;
-  const int16_t rowValueW = w - (bx + bw) - 18;
-  for (uint8_t i = 1; i < n; i++) {
-    char pb[20];
-    snprintf(pb, sizeof(pb), "%.0f %s",
-             slotScaleMax(*vis[i].slot, *vis[i].metric), vis[i].metric->unit);
-    rowValueFont = fitFontForWidth(pb, rowValueW, rowValueFont);
-  }
-
   for (uint8_t i = 1; i < n; i++) {
     const PcMetric& m = *vis[i].metric;
     const GaugeSlot& s = *vis[i].slot;
@@ -905,18 +900,21 @@ static void drawHeroScreen(bool fr) {
     snprintf(rkey, sizeof(rkey), "%s%s", rv, warn ? "!" : "");
     if (!gaugeTextChanged(w / 2, cy, rkey, label, fr)) continue;
 
-    fitFontForWidth(label, bx - 18, rowLabelFont);
+    fitFontForWidth(label, bx - 16, rowLabelFont);
     tft.setTextDatum(ML_DATUM);
     tft.setTextColor(CLR_TEXT_DIM, bg);
-    tft.drawString(label, 12, cy);
+    tft.drawString(label, 8, cy);
 
     drawMeterBar(bx, cy - bh / 2, bw, bh, frac,
                  warn ? dispSettings.warnColor : s.arcColor);
 
     char vb[20];
     snprintf(vb, sizeof(vb), "%.0f %s", m.value, m.unit);
-    setFont(tft, rowValueFont);
-    drawValueRegionR(bx + bw + 6, w - 10, cy, rowH - 2, vb,
+    char valueProbe[20];
+    snprintf(valueProbe, sizeof(valueProbe), "%.0f %s", scale, m.unit);
+    fitFontForWidth(valueProbe, rowValueW,
+                    (rowH >= 34) ? FONT_LARGE : FONT_BODY);
+    drawValueRegionR(valueLeft, valueRight, cy, rowH - 2, vb,
                      warn ? dispSettings.warnColor : CLR_TEXT, bg);
   }
 }
