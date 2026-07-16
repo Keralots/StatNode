@@ -198,7 +198,10 @@ static void handleApiConfig() {
   colors["tileTint"] = themeSettings.tileTintPct;
 
   JsonObject clock = doc["clock"].to<JsonObject>();
+  clock["face"] = dispSettings.pongClock ? 1 : 0;
   clock["use24h"] = netSettings.use24h;
+  clock["dateFormat"] = netSettings.dateFormat;
+  clock["hideDate"] = dispSettings.hideClockDate;
   clock["timezone"] = netSettings.timezoneStr;
 
   JsonObject network = doc["network"].to<JsonObject>();
@@ -335,7 +338,7 @@ static void handleSaveGauges() {
     }
   }
   saveSettings();
-  forceDisplayRedraw();
+  forceDisplayRedraw(true);
   sendJsonMessage(200, true, "Metric layout applied.");
 }
 
@@ -426,14 +429,17 @@ static void handleSaveColors() {
 }
 
 static void handleSaveClock() {
+  dispSettings.pongClock = clampedArg("clockFace", dispSettings.pongClock ? 1 : 0, 0, 1) == 1;
   netSettings.use24h = server.arg("timeFormat") != "12";
+  netSettings.dateFormat = (uint8_t)clampedArg("dateFormat", netSettings.dateFormat, 0, 5);
+  dispSettings.hideClockDate = server.hasArg("hideClockDate");
   if (server.hasArg("timezone"))
     strlcpy(netSettings.timezoneStr, server.arg("timezone").c_str(),
             sizeof(netSettings.timezoneStr));
   saveSettings();
   configTzTime(netSettings.timezoneStr, "pool.ntp.org", "time.nist.gov");
   refreshBacklightControl();
-  forceDisplayRedraw();
+  forceDisplayRedraw(true);
   sendJsonMessage(200, true, "Clock settings applied.");
 }
 
@@ -506,6 +512,7 @@ static void handleApiStatus() {
   doc["pc_online"] = pcData.online;
   doc["pc_status"] = pcData.status;
   doc["style"]     = displayStyle;
+  doc["clock_face"] = dispSettings.pongClock ? "breakout" : "standard";
   doc["backlight"] = currentBacklightLevel();
   doc["night_active"] = nightBrightnessActive();
   doc["offline_sleeping"] = offlineDisplaySleeping();

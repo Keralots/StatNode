@@ -54,9 +54,10 @@ void applyDisplaySettings();  // re-apply rotation, bg, force redraw
 void setScreenState(ScreenState state);
 ScreenState getScreenState();
 void updateDisplay();
-// Force a clean full repaint on the next updateDisplay() without a state change
-// (e.g. after the gauge mapping is edited in the portal). Safe from any context.
-void forceDisplayRedraw();
+// Force a repaint on the next updateDisplay() without a state change. Pass
+// clearFirst=true when the layout footprint may have changed; the panel clear
+// is deferred to the display loop. Safe from any context.
+void forceDisplayRedraw(bool clearFirst = false);
 // Bracket for the /screen.bmp capture render: while set, the renderer leaves
 // the panel's pacing state (packet stamps, layout counts, smoothing, cached
 // text widths) untouched so the capture never disturbs the live display.

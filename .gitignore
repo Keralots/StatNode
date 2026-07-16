@@ -5,3 +5,5 @@
 *.map
 __pycache__/
 *.pyc
+.codex/
+Agents.md

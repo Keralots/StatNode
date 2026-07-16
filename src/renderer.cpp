@@ -7,6 +7,8 @@
 //   OTA_UPDATE - "Updating..." hold screen
 #include "display_ui.h"
 #include "display_gauges.h"
+#include "clock_mode.h"
+#include "clock_pong.h"
 #include "pc_metrics.h"
 #include "settings.h"
 #include "fonts.h"
@@ -17,6 +19,7 @@
 
 static ScreenState currentScreen = SCREEN_SPLASH;
 static bool forceRedraw = true;
+static bool clearBeforeRedraw = false;
 static unsigned long lastUpdate = 0;
 static bool prevOnline = false;
 
@@ -28,9 +31,12 @@ void setScreenState(ScreenState state) {
   if (state == currentScreen) return;
   currentScreen = state;
   forceRedraw = true;
+  clearBeforeRedraw = false;
   lastUpdate = 0;            // bypass throttle so the new screen paints at once
   tft.fillScreen(dispSettings.bgColor);
   resetGaugeTextCache();
+  resetClock();
+  resetPongClock();
   markScreenCleared();
   markFrameDirty();
 }
@@ -201,7 +207,11 @@ void setCaptureRender(bool on) { gCaptureRender = on; }
 // backgrounds) only then - a plain forceDisplayRedraw() (e.g. after every
 // preview capture) repaints values opaquely without blanking anything.
 static bool gScreenCleared = true;
-void markScreenCleared() { gScreenCleared = true; }
+void markScreenCleared() {
+  gScreenCleared = true;
+  resetClock();
+  resetPongClock();
+}
 
 // Sparkline compose sprite, file-scope so /api/status can report whether the
 // flicker-free path is actually active on this board (a failed allocation
@@ -1048,17 +1058,9 @@ static void drawMonitorStyled(bool fr) {
   if (!gCaptureRender) gScreenCleared = false;
 }
 
-static void drawOfflineScreen(bool fr) {
-  const int16_t w = (int16_t)tft.width();
-  const int16_t h = (int16_t)tft.height();
-  if (fr) {
-    tft.setTextDatum(MC_DATUM);
-    setFont(tft, FONT_BODY);
-    tft.setTextColor(themeSettings.secondaryColor, dispSettings.bgColor);
-    tft.drawString("PC offline", w / 2, h / 2 - 60);
-  }
-  // Reuse the gauge clock widget as the idle face.
-  drawClockWidget(tft, w / 2, h / 2 + 6, 44, 6, fr);
+static void drawIdleClock() {
+  if (gCaptureRender) drawClockSnapshot();
+  else drawClock();
 }
 
 // ---------------------------------------------------------------------------
@@ -1066,9 +1068,43 @@ static void drawOfflineScreen(bool fr) {
 // ---------------------------------------------------------------------------
 void updateDisplay() {
   unsigned long now = millis();
+  bool fr = forceRedraw;
+
+  // Layout edits can move or shrink text and cards, leaving pixels that an
+  // opaque value-only repaint does not cover. Clear only on the real panel and
+  // only from this display-loop context; capture renders already start with a
+  // freshly filled sprite and must not consume a pending panel clear.
+  if (clearBeforeRedraw && !gCaptureRender) {
+    tft.fillScreen(dispSettings.bgColor);
+    resetGaugeTextCache();
+    markScreenCleared();
+    clearBeforeRedraw = false;
+    fr = true;
+  }
+
+  // The Breakout face animates at 50 fps, so it must bypass the monitor
+  // renderer's slower update cadence. Screenshot renders use a stateless
+  // frame and never advance the live ball, paddle, bricks, or text caches.
+  const bool idleVisible = currentScreen == SCREEN_CLOCK ||
+                           (currentScreen == SCREEN_MONITOR && !pcData.online);
+  if (idleVisible && dispSettings.pongClock) {
+    if (gCaptureRender) {
+      drawPongClockSnapshot();
+    } else {
+      if (currentScreen == SCREEN_MONITOR && prevOnline) {
+        tft.fillScreen(dispSettings.bgColor);
+        resetGaugeTextCache();
+        markScreenCleared();
+      }
+      tickPongClock();
+      if (currentScreen == SCREEN_MONITOR) prevOnline = false;
+    }
+    forceRedraw = false;
+    return;
+  }
+
   if (!forceRedraw && (now - lastUpdate < DISPLAY_UPDATE_MS)) return;
   lastUpdate = now;
-  bool fr = forceRedraw;
 
   switch (currentScreen) {
     case SCREEN_SPLASH:           break;  // initDisplay drew it
@@ -1083,23 +1119,26 @@ void updateDisplay() {
           if (!prevOnline) {
             tft.fillScreen(dispSettings.bgColor);
             resetGaugeTextCache();
-            gScreenCleared = true;
+            markScreenCleared();
             fr = true;
           }
         }
         drawMonitorStyled(fr);
       } else {
-        if (!gCaptureRender && (fr || prevOnline)) {
-          tft.fillScreen(dispSettings.bgColor); resetGaugeTextCache(); fr = true;
+        if (!gCaptureRender && prevOnline) {
+          tft.fillScreen(dispSettings.bgColor);
+          resetGaugeTextCache();
+          markScreenCleared();
+          fr = true;
         }
-        drawOfflineScreen(fr);
+        drawIdleClock();
       }
       // A capture render must not consume an offline->online transition; the
       // panel still needs its physical clear on the next real frame.
       if (!gCaptureRender) prevOnline = pcData.online;
       break;
     case SCREEN_CLOCK:
-      drawOfflineScreen(fr);
+      drawIdleClock();
       break;
     case SCREEN_OFF:
       break;
@@ -1109,13 +1148,12 @@ void updateDisplay() {
   markFrameDirty();
 }
 
-// Force a clean full repaint on the next updateDisplay() without a screen-state
-// transition. Used after a live config change (e.g. saving the gauge mapping)
-// so the new layout/colors take effect without a reboot. Touches no pixels here
-// (the draw happens in the loop's updateDisplay), so it is safe to call from the
-// web-server handler.
-void forceDisplayRedraw() {
+// Force a repaint on the next updateDisplay() without a screen-state transition.
+// Layout-changing callers request a deferred panel clear; capture and live-value
+// callers retain the flicker-free opaque repaint path.
+void forceDisplayRedraw(bool clearFirst) {
   forceRedraw = true;
+  if (clearFirst) clearBeforeRedraw = true;
   lastUpdate = 0;
   resetGaugeTextCache();
 }

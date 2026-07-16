@@ -14,7 +14,7 @@
     .sensor-cat{grid-column:1/-1;font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);margin:10px 0 0}
     .sensor-row{display:grid;grid-template-columns:auto minmax(0,1fr);gap:11px;padding:12px;border:1px solid var(--line);border-radius:var(--r-md);background:var(--card-2)}
     .sensor-row.selected{border-color:var(--accent-line);background:var(--accent-soft)}.sensor-row .check-box{margin-top:2px}.sensor-toggle{padding:0;margin:0}
-    .sensor-copy{min-width:0}.sensor-name{display:flex;align-items:baseline;gap:8px;min-width:0}.sensor-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sensor-name code{margin-left:auto;color:var(--dim);font-size:10px}
+    .sensor-copy{min-width:0}.sensor-name{display:flex;align-items:baseline;gap:8px;min-width:0}.sensor-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sensor-name code{color:var(--dim);font-size:10px}.sensor-reading{margin-left:auto;flex:none;color:var(--text);font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums}
     .sensor-meta{color:var(--dim);font-size:12px;margin-top:2px}.sensor-alias{margin-top:10px}.sensor-alias input{padding:8px 10px;font-size:13px;max-width:none}
     .selected-chip{cursor:default}.selected-chip button{border:0;background:transparent;color:var(--dim);cursor:pointer;font-size:16px;line-height:1;padding:0 3px}.selected-chip button:hover{color:var(--err)}
     .device-grid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px;align-items:start}.device-preview-column{position:sticky;top:calc(var(--topbar-h) + 18px)}
@@ -74,7 +74,7 @@
         <div class="page-header"><h1 class="page-h1">Sensors</h1><p class="page-lede">Choose the readings sent over UDP. Screen slots, display labels, layout, and colors remain owned by the device portal.</p></div>
         <div class="note" id="sourceBanner"><span class="note-k">Source</span><span>Reading available sensors...</span></div>
         <div class="card"><div class="card-head"><h2 class="card-title">Selected stream <span class="tag" id="sensorCount">0 / 20</span></h2></div><div class="chip-tray" id="selectedTray"><span class="chip-empty">No sensors selected.</span></div><p class="field-hint">Stream aliases change the metric name sent to every device. For a label used only in one screen slot, use the device portal instead.</p></div>
-        <div class="card"><h2 class="card-title">Available sensors</h2><div class="sensor-tools"><button type="button" class="btn" id="rescanBtn">Rescan sensors</button><input type="text" id="sensorSearch" placeholder="Filter sensors..." autocomplete="off"></div><div class="sensor-grid" id="sensorList"></div></div>
+        <div class="card"><h2 class="card-title">Available sensors</h2><p class="field-hint">Each value is a one-time reading captured during the latest sensor scan.</p><div class="sensor-tools"><button type="button" class="btn" id="rescanBtn">Rescan sensors</button><input type="text" id="sensorSearch" placeholder="Filter sensors..." autocomplete="off"></div><div class="sensor-grid" id="sensorList"></div></div>
       </section>
 
       <section class="page" data-page="device">

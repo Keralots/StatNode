@@ -2,6 +2,7 @@
 build/
 dist/
 splash.png
+PCMonitorColorCompanion.spec
 
 # Python cache
 __pycache__/
