@@ -381,6 +381,8 @@ static const ColorPreset kPresets[] = {
 };
 
 static void handleSaveColors() {
+  if (server.hasArg("style"))
+    displayStyle = (uint8_t)clampedArg("style", displayStyle, 0, STYLE_COUNT - 1);
   const String pre = server.arg("preset");
   const ColorPreset* preset = nullptr;
   for (const ColorPreset& cp : kPresets) {
