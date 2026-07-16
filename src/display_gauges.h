@@ -38,7 +38,8 @@ void drawFanGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,
 // active=false (offline/stale source) renders a dim "--".
 void drawPowerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,
                     float watts, bool active, const char* label, bool forceRedraw,
-                    float fullScaleW = -1.0f);
+                    float fullScaleW = -1.0f,
+                    const GaugeColors* colors = nullptr);
 
 // Draw clock widget (HH:MM inside track ring)
 void drawClockWidget(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,

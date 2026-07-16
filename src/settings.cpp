@@ -12,12 +12,14 @@ GaugeMapping gaugeMap;
 GaugeLabels gaugeLabels;
 BacklightSettings backlightSettings;
 TouchSettings touchSettings;
+ThemeSettings themeSettings;
 uint8_t displayStyle = STYLE_RINGS;
 uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
 static Preferences prefs;
 static const uint8_t BACKLIGHT_SETTINGS_VERSION = 1;
 static const uint8_t TOUCH_SETTINGS_VERSION = 1;
+static const uint8_t THEME_SETTINGS_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 //  Defaults
@@ -84,6 +86,17 @@ void defaultTouchSettings(TouchSettings& ts) {
   ts.rememberStyle = 0;
 }
 
+void defaultThemeSettings(ThemeSettings& ts) {
+  ts.version = THEME_SETTINGS_VERSION;
+  ts.labelMode = THEME_LABEL_CLASSIC;
+  ts.tileTintPct = 0;
+  ts.reserved = 0;
+  ts.valueColor = CLR_TEXT;
+  ts.labelColor = CLR_TEXT_DIM;
+  ts.secondaryColor = CLR_TEXT_DIM;
+  ts.tileColor = CLR_CARD;
+}
+
 void defaultNetworkSettings(NetworkSettings& ns) {
   ns.useDHCP = true;
   ns.staticIP[0] = '\0';
@@ -110,6 +123,7 @@ void loadSettings() {
   defaultGaugeLabels(gaugeLabels);
   defaultBacklightSettings(backlightSettings);
   defaultTouchSettings(touchSettings);
+  defaultThemeSettings(themeSettings);
 
   prefs.begin(NVS_NAMESPACE, true);  // read-only
 
@@ -134,6 +148,11 @@ void loadSettings() {
     TouchSettings stored;
     prefs.getBytes("touch", &stored, sizeof(stored));
     if (stored.version == TOUCH_SETTINGS_VERSION) touchSettings = stored;
+  }
+  if (prefs.getBytesLength("theme") == sizeof(ThemeSettings)) {
+    ThemeSettings stored;
+    prefs.getBytes("theme", &stored, sizeof(stored));
+    if (stored.version == THEME_SETTINGS_VERSION) themeSettings = stored;
   }
   prefs.getString("ssid", wifiSSID, sizeof(wifiSSID));
   prefs.getString("pass", wifiPass, sizeof(wifiPass));
@@ -160,6 +179,9 @@ void loadSettings() {
   touchSettings.styleMask &= (1u << STYLE_COUNT) - 1u;
   if (touchSettings.styleMask == 0)
     touchSettings.styleMask = (1u << STYLE_COUNT) - 1u;
+  if (themeSettings.labelMode >= THEME_LABEL_MODE_COUNT)
+    themeSettings.labelMode = THEME_LABEL_CLASSIC;
+  if (themeSettings.tileTintPct > 30) themeSettings.tileTintPct = 30;
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
     gaugeLabels.labels[i][GAUGE_LABEL_LENGTH - 1] = '\0';
     char cleaned[GAUGE_LABEL_LENGTH];
@@ -178,6 +200,7 @@ void saveSettings() {
   prefs.putBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
   prefs.putBytes("backlight", &backlightSettings, sizeof(BacklightSettings));
   prefs.putBytes("touch", &touchSettings, sizeof(TouchSettings));
+  prefs.putBytes("theme", &themeSettings, sizeof(ThemeSettings));
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("bright", brightness);

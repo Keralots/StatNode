@@ -190,6 +190,12 @@ static void handleApiConfig() {
   addHtmlColor(colors, "warn", dispSettings.warnColor);
   addHtmlColor(colors, "clock", dispSettings.clockTimeColor);
   addHtmlColor(colors, "date", dispSettings.clockDateColor);
+  addHtmlColor(colors, "value", themeSettings.valueColor);
+  addHtmlColor(colors, "label", themeSettings.labelColor);
+  addHtmlColor(colors, "secondary", themeSettings.secondaryColor);
+  addHtmlColor(colors, "tile", themeSettings.tileColor);
+  colors["labelMode"] = themeSettings.labelMode;
+  colors["tileTint"] = themeSettings.tileTintPct;
 
   JsonObject clock = doc["clock"].to<JsonObject>();
   clock["use24h"] = netSettings.use24h;
@@ -336,17 +342,42 @@ static void handleSaveGauges() {
 struct ColorPreset {
   const char* id;
   uint16_t bg, track, warn, clockTime, clockDate;
+  uint16_t value, label, secondary, tile;
+  uint8_t labelMode, tileTintPct;
   uint16_t slots[NUM_GAUGE_SLOTS];
 };
 
 static const ColorPreset kPresets[] = {
   // Factory defaults (config.h palette).
   { "default", CLR_BG, CLR_TRACK, CLR_RED, CLR_TEXT, CLR_TEXT_DIM,
+    CLR_TEXT, CLR_TEXT_DIM, CLR_TEXT_DIM, CLR_CARD,
+    THEME_LABEL_CLASSIC, 0,
     { CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED } },
   // "Modern": the colorblind-validated categorical set from the redesign.
-  { "modern", CLR_BG, 0x2151 /*#202830*/, 0xE249 /*#E5484D*/, CLR_TEXT, CLR_TEXT_DIM,
+  { "modern", 0x1082 /*#101214*/, 0x2146 /*#202830*/, 0xE249 /*#E5484D*/,
+    0xF7BE /*#F5F5F5*/, 0x9D35 /*#9AA4AD*/,
+    0xF7BE /*#F5F5F5*/, 0xBE19 /*#B8C3CC*/, 0x84B4 /*#8695A1*/,
+    0x10C4 /*#151A20*/, THEME_LABEL_CUSTOM, 12,
     { 0x3C3C /*#3987E5*/, 0x0400 /*#008300*/, 0xD290 /*#D55181*/,
       0xCC20 /*#C98500*/, 0x1CEE /*#199E70*/, 0xDAC4 /*#D95926*/ } },
+  { "oled", CLR_BG, 0x1082 /*#101214*/, CLR_RED, CLR_TEXT, CLR_TEXT_DIM,
+    CLR_TEXT, CLR_TEXT_DIM, CLR_TEXT_DIM, CLR_BG,
+    THEME_LABEL_ACCENT, 12,
+    { CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED } },
+  { "slate", 0x10C4 /*#101820*/, 0x3209 /*#31404C*/, 0xFAEB /*#FF5D5D*/,
+    0xF7BE /*#F2F5F7*/, 0x84B4 /*#8695A1*/,
+    0xF7BE /*#F2F5F7*/, 0xBE19 /*#B8C3CC*/, 0x84B4 /*#8695A1*/,
+    0x1905 /*#18232D*/, THEME_LABEL_CUSTOM, 12,
+    { 0x3C3C, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_ORANGE, 0xF81F } },
+  { "amber", 0x1040 /*#100B05*/, 0x4183 /*#44321D*/, 0xFAE8 /*#FF5D45*/,
+    0xFF37 /*#FFE7BD*/, 0xAC4A /*#AC8956*/,
+    0xFF37 /*#FFE7BD*/, 0xF5CB /*#F1B85E*/, 0xAC4A /*#AC8956*/,
+    0x20A1 /*#21170B*/, THEME_LABEL_CUSTOM, 12,
+    { CLR_GOLD, CLR_ORANGE, CLR_YELLOW, CLR_RED, 0xF5CB, 0xAC4A } },
+  { "contrast", CLR_BG, 0x52AA /*#555555*/, CLR_RED, CLR_TEXT, CLR_YELLOW,
+    CLR_TEXT, CLR_YELLOW, CLR_TEXT, 0x1082 /*#101010*/,
+    THEME_LABEL_AUTO, 0,
+    { CLR_CYAN, CLR_YELLOW, CLR_GREEN, 0xF81F, CLR_ORANGE, CLR_RED } },
 };
 
 static void handleSaveColors() {
@@ -361,6 +392,12 @@ static void handleSaveColors() {
     dispSettings.warnColor      = preset->warn;
     dispSettings.clockTimeColor = preset->clockTime;
     dispSettings.clockDateColor = preset->clockDate;
+    themeSettings.valueColor     = preset->value;
+    themeSettings.labelColor     = preset->label;
+    themeSettings.secondaryColor = preset->secondary;
+    themeSettings.tileColor      = preset->tile;
+    themeSettings.labelMode      = preset->labelMode;
+    themeSettings.tileTintPct    = preset->tileTintPct;
     for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++)
       gaugeMap.slots[i].arcColor = preset->slots[i];
   } else {
@@ -369,6 +406,15 @@ static void handleSaveColors() {
     if (server.hasArg("cwarn"))  dispSettings.warnColor      = htmlToRgb565(server.arg("cwarn").c_str());
     if (server.hasArg("cct"))    dispSettings.clockTimeColor = htmlToRgb565(server.arg("cct").c_str());
     if (server.hasArg("ccd"))    dispSettings.clockDateColor = htmlToRgb565(server.arg("ccd").c_str());
+    if (server.hasArg("cvalue")) themeSettings.valueColor = htmlToRgb565(server.arg("cvalue").c_str());
+    if (server.hasArg("clabel")) themeSettings.labelColor = htmlToRgb565(server.arg("clabel").c_str());
+    if (server.hasArg("csecondary"))
+      themeSettings.secondaryColor = htmlToRgb565(server.arg("csecondary").c_str());
+    if (server.hasArg("ctile")) themeSettings.tileColor = htmlToRgb565(server.arg("ctile").c_str());
+    themeSettings.labelMode = (uint8_t)clampedArg(
+      "labelMode", themeSettings.labelMode, THEME_LABEL_CLASSIC, THEME_LABEL_AUTO);
+    themeSettings.tileTintPct = (uint8_t)clampedArg(
+      "tileTint", themeSettings.tileTintPct, 0, 30);
   }
   saveSettings();
   applyDisplaySettings();   // repaints the panel with the new background

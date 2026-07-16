@@ -782,7 +782,7 @@ void drawFanGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,
 
 void drawPowerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius,
                     float watts, bool active, const char* label, bool forceRedraw,
-                    float fullScaleW) {
+                    float fullScaleW, const GaugeColors* colors) {
   ScopedWrite sw(gfx);
   const uint16_t startAngle = 60;
   const int16_t thickness = LY_TEMP_GAUGE_T;
@@ -796,7 +796,17 @@ void drawPowerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius
   uint16_t fillEnd = startAngle + (uint16_t)(ratio * 240.0f);
   if (fillEnd > 300) fillEnd = 300;
 
-  uint16_t arcColor = (active && w > 0.5f) ? CLR_GOLD : CLR_TEXT_DIM;
+  const uint16_t activeArcColor = colors ? colors->arc : CLR_GOLD;
+  const uint16_t labelColor = colors ? colors->label : activeArcColor;
+  const uint16_t valueColor = colors ? colors->value : CLR_TEXT;
+  const bool legacyTheme = colors &&
+                           themeSettings.labelMode == THEME_LABEL_CLASSIC &&
+                           themeSettings.valueColor == CLR_TEXT &&
+                           themeSettings.secondaryColor == CLR_TEXT_DIM;
+  const uint16_t secondaryColor = colors
+    ? (legacyTheme ? CLR_TEXT : themeSettings.secondaryColor)
+    : CLR_TEXT_DIM;
+  uint16_t arcColor = (active && w > 0.5f) ? activeArcColor : secondaryColor;
   uint16_t drawFill = (ratio > 0.01f) ? fillEnd : startAngle;
   drawArcFill(gfx, cx, cy, radius, thickness, drawFill, arcColor, forceRedraw);
 
@@ -841,24 +851,24 @@ void drawPowerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius
       const int16_t splitX = cx - (valueW + suffixGap + suffixW) / 2 + valueW;
 
       gfx.setTextDatum(MR_DATUM);
-      setGaugeClearedTextColor(gfx, CLR_TEXT, bg);
+      setGaugeClearedTextColor(gfx, valueColor, bg);
       gfx.drawString(valueBuf, splitX, cy);
 
       setFont(gfx, FONT_SMALL);
       gfx.setTextDatum(ML_DATUM);
-      setGaugeClearedTextColor(gfx, CLR_TEXT, bg);
+      setGaugeClearedTextColor(gfx, secondaryColor, bg);
       gfx.drawString(suffix, splitX + suffixGap, cy);
     } else {
       gfx.setTextDatum(MC_DATUM);
       fitValueFont(gfx, buf, radius, thickness, LY_GAUGE_VALUE_FONT);
-      setGaugeClearedTextColor(gfx, CLR_TEXT_DIM, bg);
+      setGaugeClearedTextColor(gfx, secondaryColor, bg);
       gfx.drawString(buf, cx, cy);
     }
 
     bool sm = dispSettings.smallLabels;
     gfx.setTextDatum(MC_DATUM);
     setFont(gfx, sm ? FONT_SMALL : FONT_BODY);
-    gfx.setTextColor(arcColor, bg);
+    gfx.setTextColor(labelColor, bg);
     gfx.drawString(label, cx, cy + radius + (sm ? 3 : -1));
   }
 }

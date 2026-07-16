@@ -91,20 +91,66 @@ static uint8_t classifyByUnit(const char* unit) {
   }
 }
 
+static uint16_t blend565(uint8_t alpha, uint16_t fg, uint16_t bg) {
+  const uint8_t r = ((fg >> 11) & 0x1F) * alpha / 255 +
+                    ((bg >> 11) & 0x1F) * (255 - alpha) / 255;
+  const uint8_t g = ((fg >> 5) & 0x3F) * alpha / 255 +
+                    ((bg >> 5) & 0x3F) * (255 - alpha) / 255;
+  const uint8_t b = (fg & 0x1F) * alpha / 255 +
+                    (bg & 0x1F) * (255 - alpha) / 255;
+  return (uint16_t)((r << 11) | (g << 5) | b);
+}
+
+static uint16_t autoContrast565(uint16_t bg) {
+  const uint16_t r = ((bg >> 11) & 0x1F) * 255 / 31;
+  const uint16_t g = ((bg >> 5) & 0x3F) * 255 / 63;
+  const uint16_t b = (bg & 0x1F) * 255 / 31;
+  const uint16_t luminance = (uint16_t)((r * 54 + g * 183 + b * 19) / 256);
+  return luminance > 128 ? 0x0000 : 0xFFFF;
+}
+
+static uint16_t themedLabelColor(uint16_t accent, uint16_t bg,
+                                 uint16_t classicColor) {
+  switch (themeSettings.labelMode) {
+    case THEME_LABEL_CUSTOM: return themeSettings.labelColor;
+    case THEME_LABEL_ACCENT: return accent;
+    case THEME_LABEL_AUTO:   return autoContrast565(bg);
+    default:                 return classicColor;
+  }
+}
+
+static uint16_t themedTileColor(uint16_t accent) {
+  if (themeSettings.tileTintPct == 0) return themeSettings.tileColor;
+  const uint8_t alpha = (uint8_t)(themeSettings.tileTintPct * 255 / 100);
+  return blend565(alpha, accent, themeSettings.tileColor);
+}
+
 static void drawSlotGauge(const GaugeSlot& slot, const PcMetric& m,
                           const char* label,
                           int16_t cx, int16_t cy, int16_t r, bool fr) {
   uint8_t type = slot.type;
   if (type == GAUGE_TYPE_AUTO || type >= GAUGE_TYPE_COUNT) type = classifyByUnit(m.unit);
 
-  // Accent both arc and label with the slot color; value keeps the default text
-  // color (the temp gauge recolors it to warnColor past the warn threshold).
-  GaugeColors gc = { slot.arcColor, slot.arcColor, CLR_TEXT };
+  // Theme colors are resolved here so every gauge primitive receives a complete
+  // palette. Warning thresholds can still override the value and arc locally.
+  GaugeColors gc = {
+    slot.arcColor,
+    themedLabelColor(slot.arcColor, dispSettings.bgColor, slot.arcColor),
+    themeSettings.valueColor
+  };
 
   switch (type) {
     case GAUGE_TYPE_POWER: {
       float scale = slot.scaleMax ? (float)slot.scaleMax : (float)dispSettings.powerScaleW;
-      drawPowerGauge(tft, cx, cy, r, m.value, true, label, fr, scale);
+      const uint16_t powerArc = themeSettings.labelMode == THEME_LABEL_CLASSIC
+        ? (uint16_t)CLR_GOLD : slot.arcColor;
+      GaugeColors powerColors = {
+        powerArc,
+        themedLabelColor(slot.arcColor, dispSettings.bgColor, CLR_GOLD),
+        themeSettings.valueColor
+      };
+      drawPowerGauge(tft, cx, cy, r, m.value, true, label, fr, scale,
+                     &powerColors);
       break;
     }
     case GAUGE_TYPE_PERCENT: {
@@ -447,7 +493,7 @@ static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
     int16_t dotY = sy;
     if (dotY < oy + dotR) dotY = oy + dotR;
     if (dotY > oy + h - 1 - dotR) dotY = oy + h - 1 - dotR;
-    g.fillCircle(ox + plotW - 1, dotY, dotR, CLR_TEXT);
+    g.fillCircle(ox + plotW - 1, dotY, dotR, themeSettings.valueColor);
   }
   if (off) {
     gSparkSpr.pushSprite(tft_ptr, x, y);
@@ -491,7 +537,7 @@ static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t ba
     const int16_t unitFh = (int16_t)tft.fontHeight();
     const int16_t unitBaseY = baseY - (fh - unitFh) / 2;
     tft.setTextDatum(BL_DATUM);
-    tft.setTextColor(CLR_TEXT_DIM, bg);
+    tft.setTextColor(themeSettings.secondaryColor, bg);
     tft.drawString(unit, x + vw + 5, unitBaseY);
   }
   if (prevVw) *prevVw = vw;
@@ -522,7 +568,7 @@ static void drawNoMetricsHint(int16_t w, int16_t gridH, bool fr) {
   if (!fr) return;
   tft.setTextDatum(MC_DATUM);
   setFont(tft, FONT_BODY);
-  tft.setTextColor(CLR_TEXT_DIM, dispSettings.bgColor);
+  tft.setTextColor(themeSettings.secondaryColor, dispSettings.bgColor);
   tft.drawString("No metrics bound", w / 2, gridH / 2);
 }
 
@@ -595,7 +641,7 @@ static void drawBigNumbersScreen(bool fr) {
     // pixels that actually changed get repainted (no blink at packet rate).
     setFont(tft, FONT_SMALL);
     tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(CLR_TEXT_DARK, bg);
+    tft.setTextColor(themedLabelColor(s.arcColor, bg, CLR_TEXT_DARK), bg);
     const int16_t labelY = y + (roomy ? 8 : 4);
     tft.drawString(label, x + padX, labelY);
     const int16_t lw = tft.textWidth(label);
@@ -615,7 +661,7 @@ static void drawBigNumbersScreen(bool fr) {
     static int16_t prevVw[NUM_GAUGE_SLOTS];
     if (fr && !gCaptureRender) prevVw[vis[i].slotIdx] = -1;
     drawValueRegionL(x + padX, baseY, cellW - 2 * padX, bandH, val, m.unit,
-                     warn ? dispSettings.warnColor : CLR_TEXT, bg,
+                     warn ? dispSettings.warnColor : themeSettings.valueColor, bg,
                      gCaptureRender ? nullptr : &prevVw[vis[i].slotIdx]);
 
     drawMeterBar(x + padX, y + cellH - (roomy ? 12 : 7), cellW - 2 * padX, 3,
@@ -688,6 +734,8 @@ static void drawTilesScreen(bool fr) {
     // The chart wears the slot's identity color unconditionally: a warn flip
     // must not recolor three minutes of history (stripe + value carry it).
     const uint16_t lineColor = s.arcColor;
+    const uint16_t cardBg = themedTileColor(lineColor);
+    const uint16_t labelColor = themedLabelColor(lineColor, cardBg, CLR_TEXT_DIM);
 
     char val[12];
     snprintf(val, sizeof(val), "%.0f", m.value);
@@ -699,7 +747,7 @@ static void drawTilesScreen(bool fr) {
     // plain full redraw (preview capture, style save) repaints content
     // opaquely and refilling the card here would flash it empty first.
     if (fr && (gScreenCleared || relayout || gCaptureRender))
-      tft.fillRoundRect(x, y, cardW, cardH, 6, CLR_CARD);
+      tft.fillRoundRect(x, y, cardW, cardH, 6, cardBg);
 
     if (head) {
       // Compose the whole head strip offscreen and push it as ONE blit - the
@@ -711,7 +759,7 @@ static void drawTilesScreen(bool fr) {
         headSpr.fillSprite(bg);   // panel bg shows through the corner notches
         // Card top with rounded corners; drawn taller than the strip so the
         // bottom edge clips square and joins the card body seamlessly.
-        headSpr.fillRoundRect(0, 0, cardW, headH + 8, 6, CLR_CARD);
+        headSpr.fillRoundRect(0, 0, cardW, headH + 8, 6, cardBg);
         if (warn) headSpr.fillRect(0, 6, 3, headH - 6, dispSettings.warnColor);
 
         const int16_t headCy = headH / 2 + 1;
@@ -719,9 +767,10 @@ static void drawTilesScreen(bool fr) {
         const int16_t labelW = headSpr.textWidth(label);
         const int16_t unitW  = headSpr.textWidth(m.unit);
         headSpr.setTextDatum(ML_DATUM);
-        headSpr.setTextColor(CLR_TEXT_DIM, CLR_CARD);
+        headSpr.setTextColor(labelColor, cardBg);
         headSpr.drawString(label, 9, headCy);
         headSpr.setTextDatum(MR_DATUM);
+        headSpr.setTextColor(themeSettings.secondaryColor, cardBg);
         headSpr.drawString(m.unit, cardW - 9, headCy);
 
         char probe[12];
@@ -737,7 +786,8 @@ static void drawTilesScreen(bool fr) {
           while (fi < 3 && headSpr.textWidth(probe) > maxW) setFont(headSpr, steps[++fi]);
         }
         headSpr.setTextDatum(MR_DATUM);
-        headSpr.setTextColor(warn ? dispSettings.warnColor : CLR_TEXT, CLR_CARD);
+        headSpr.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor,
+                             cardBg);
         headSpr.drawString(val, cardW - 9 - unitW - 4, headCy);
 
         headSpr.pushSprite(tft_ptr, x, y);
@@ -750,9 +800,10 @@ static void drawTilesScreen(bool fr) {
         const int16_t labelW = tft.textWidth(label);
         const int16_t unitW  = tft.textWidth(m.unit);
         tft.setTextDatum(ML_DATUM);
-        tft.setTextColor(CLR_TEXT_DIM, CLR_CARD);
+        tft.setTextColor(labelColor, cardBg);
         tft.drawString(label, x + 9, headCy);
         tft.setTextDatum(MR_DATUM);
+        tft.setTextColor(themeSettings.secondaryColor, cardBg);
         tft.drawString(m.unit, x + cardW - 9, headCy);
         char probe[12];
         slotProbe(s, m, probe, sizeof(probe));
@@ -760,16 +811,17 @@ static void drawTilesScreen(bool fr) {
                         (headH >= 34) ? FONT_LARGE : FONT_BODY);
         drawValueRegionR(x + 9 + labelW + 6, x + cardW - 9 - unitW - 4, headCy,
                          headH - 4, val,
-                         warn ? dispSettings.warnColor : CLR_TEXT, CLR_CARD);
+                         warn ? dispSettings.warnColor : themeSettings.valueColor,
+                         cardBg);
       }
       // Warn stripe below the head strip (small overpaint, cannot blink).
       tft.fillRect(x, y + headH, 3, cardH - headH - 6,
-                   warn ? dispSettings.warnColor : CLR_CARD);
+                   warn ? dispSettings.warnColor : cardBg);
     }
 
     if ((sparkTick || fr) && cardH - headH - 10 >= 8) {
       drawSparkline(pcHistory[vis[i].slotIdx], vis[i].slotIdx, x + 8, y + headH + 2,
-                    cardW - 16, cardH - headH - 10, lineColor, CLR_CARD, sparkTick);
+                    cardW - 16, cardH - headH - 10, lineColor, cardBg, sparkTick);
     }
   }
 }
@@ -832,7 +884,7 @@ static void drawHeroScreen(bool fr) {
 
     setFont(tft, FONT_SMALL);
     tft.setTextDatum(TL_DATUM);
-    tft.setTextColor(CLR_TEXT_DARK, bg);
+    tft.setTextColor(themedLabelColor(hs.arcColor, bg, CLR_TEXT_DARK), bg);
     tft.drawString(heroLabel, 12, 8);
     const int16_t lw = tft.textWidth(heroLabel);
     tft.fillRect(12 + lw, 8, heroW - 24 - lw, 14, bg);
@@ -849,7 +901,7 @@ static void drawHeroScreen(bool fr) {
     static int16_t heroPrevVw = -1;
     if (fr && !gCaptureRender) heroPrevVw = -1;
     drawValueRegionL(12, baseY, heroW - 24, bandH, val, hm.unit,
-                     heroWarn ? dispSettings.warnColor : CLR_TEXT, bg,
+                     heroWarn ? dispSettings.warnColor : themeSettings.valueColor, bg,
                      gCaptureRender ? nullptr : &heroPrevVw);
   }
 
@@ -902,7 +954,7 @@ static void drawHeroScreen(bool fr) {
 
     fitFontForWidth(label, bx - 16, rowLabelFont);
     tft.setTextDatum(ML_DATUM);
-    tft.setTextColor(CLR_TEXT_DIM, bg);
+    tft.setTextColor(themedLabelColor(s.arcColor, bg, CLR_TEXT_DIM), bg);
     tft.drawString(label, 8, cy);
 
     drawMeterBar(bx, cy - bh / 2, bw, bh, frac,
@@ -915,7 +967,7 @@ static void drawHeroScreen(bool fr) {
     fitFontForWidth(valueProbe, rowValueW,
                     (rowH >= 34) ? FONT_LARGE : FONT_BODY);
     drawValueRegionR(valueLeft, valueRight, cy, rowH - 2, vb,
-                     warn ? dispSettings.warnColor : CLR_TEXT, bg);
+                     warn ? dispSettings.warnColor : themeSettings.valueColor, bg);
   }
 }
 
@@ -1002,7 +1054,7 @@ static void drawOfflineScreen(bool fr) {
   if (fr) {
     tft.setTextDatum(MC_DATUM);
     setFont(tft, FONT_BODY);
-    tft.setTextColor(CLR_TEXT_DIM, dispSettings.bgColor);
+    tft.setTextColor(themeSettings.secondaryColor, dispSettings.bgColor);
     tft.drawString("PC offline", w / 2, h / 2 - 60);
   }
   // Reuse the gauge clock widget as the idle face.
