@@ -9,6 +9,8 @@ uint8_t brightness = 200;
 DisplaySettings dispSettings;
 NetworkSettings netSettings;
 GaugeMapping gaugeMap;
+uint8_t displayStyle = STYLE_RINGS;
+uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
 static Preferences prefs;
 
@@ -90,6 +92,11 @@ void loadSettings() {
   prefs.getString("ssid", wifiSSID, sizeof(wifiSSID));
   prefs.getString("pass", wifiPass, sizeof(wifiPass));
   brightness = prefs.getUChar("bright", 200);
+  displayStyle = prefs.getUChar("style", STYLE_RINGS);
+  if (displayStyle >= STYLE_COUNT) displayStyle = STYLE_RINGS;
+  sparkRedrawSec = prefs.getUChar("sparks", SPARK_REDRAW_MS / 1000);
+  if (sparkRedrawSec < 1) sparkRedrawSec = 1;
+  if (sparkRedrawSec > 60) sparkRedrawSec = 60;
 
   prefs.end();
 }
@@ -102,6 +109,8 @@ void saveSettings() {
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("bright", brightness);
+  prefs.putUChar("style", displayStyle);
+  prefs.putUChar("sparks", sparkRedrawSec);
   prefs.end();
 }
 

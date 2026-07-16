@@ -57,4 +57,11 @@ void drawLayerGauge(lgfx::LovyanGFX& gfx, int16_t cx, int16_t cy, int16_t radius
 // Reset cached text (call on screen transitions)
 void resetGaugeTextCache();
 
+// Change-detection gate for cached text, keyed by an anchor coordinate pair.
+// Returns true when (main, sub) differs from the cached strings at (cx, cy)
+// or force is set, updating the cache. Shared with the renderer's alternate
+// monitor styles so their cells/rows redraw only when content changes.
+bool gaugeTextChanged(int16_t cx, int16_t cy, const char* main,
+                      const char* sub, bool force);
+
 #endif // DISPLAY_GAUGES_H

@@ -569,8 +569,8 @@ static GaugeTextCache* gaugeCache(int16_t cx, int16_t cy) {
 }
 
 // Check if text changed; update cache. Returns true if redraw needed.
-static bool gaugeTextChanged(int16_t cx, int16_t cy, const char* main,
-                             const char* sub, bool force) {
+bool gaugeTextChanged(int16_t cx, int16_t cy, const char* main,
+                      const char* sub, bool force) {
   if (force) {
     GaugeTextCache* c = gaugeCache(cx, cy);
     if (c) { strlcpy(c->main, main, sizeof(c->main)); strlcpy(c->sub, sub, sizeof(c->sub)); }

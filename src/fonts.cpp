@@ -27,6 +27,13 @@ static void applyBitmapFallback(lgfx::LovyanGFX& gfx, FontID id) {
     }
 }
 
+// The cache assumes one render target. After retargeting tft_ptr (offscreen
+// capture, JC3248 sprite) the cached id describes the OLD device; reset so the
+// next setFont() actually loads the font on the new target.
+void resetFontCache() {
+    currentFont = FONT_NONE;
+}
+
 void setFont(lgfx::LovyanGFX& gfx, FontID id) {
     if (id == currentFont) return;
 

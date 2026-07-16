@@ -26,4 +26,8 @@ enum FontID : uint8_t {
 // included in the same translation unit.
 void setFont(lgfx::LovyanGFX& gfx, FontID id);
 
+// Invalidate the remembered font selection (it is global, not per-device).
+// Call after switching the render target so setFont() reloads on the new one.
+void resetFontCache();
+
 #endif // FONTS_H

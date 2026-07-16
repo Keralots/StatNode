@@ -115,6 +115,7 @@
 //  Display refresh
 // =============================================================================
 #define DISPLAY_UPDATE_MS          250    // ~4 Hz refresh rate
+#define SPARK_REDRAW_MS           3000    // min ms between sparkline repaints (calm charts)
 #define DISPLAY_STATE_TIMEOUT_MS   60000  // 60s timeout for intermediate display states
 
 // =============================================================================

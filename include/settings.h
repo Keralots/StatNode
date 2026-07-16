@@ -37,6 +37,19 @@ struct GaugeMapping {
   GaugeSlot slots[NUM_GAUGE_SLOTS];
 };
 
+// Monitor screen face. Selects how the bound metrics are rendered; all styles
+// share the same GaugeMapping slots (slot order = reading order, slot 1 = hero
+// in STYLE_HERO). Persisted as its own NVS scalar ("style"), NOT inside the
+// DisplaySettings blob, so adding it never resizes "disp" (a size mismatch
+// there would reset every display setting on OTA).
+enum DisplayStyle : uint8_t {
+  STYLE_RINGS       = 0,  // classic arc gauge grid (default)
+  STYLE_BIG_NUMBERS = 1,  // large values + hairline meter, no chrome
+  STYLE_TILES       = 2,  // cards with value + sparkline history
+  STYLE_HERO        = 3,  // slot 1 large with sparkline + compact rows
+  STYLE_COUNT
+};
+
 // Display customization. Trimmed to the fields the reused chassis (display_ui,
 // display_gauges, display_anim) actually reads - the Bambu printer/AMS/Tasmota
 // fields are gone.
@@ -86,6 +99,8 @@ extern uint8_t brightness;
 extern DisplaySettings dispSettings;
 extern NetworkSettings netSettings;
 extern GaugeMapping gaugeMap;
+extern uint8_t displayStyle;   // DisplayStyle value
+extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
 
 void loadSettings();
 void saveSettings();
