@@ -67,12 +67,16 @@ enum DisplayStyle : uint8_t {
   STYLE_BIG_NUMBERS = 1,  // large values + hairline meter, no chrome
   STYLE_TILES       = 2,  // cards with value + sparkline history
   STYLE_HERO        = 3,  // slot 1 large with sparkline + compact rows
+  STYLE_STRIPS      = 4,  // full-width sparkline lane per metric
+  STYLE_DUO         = 5,  // slots 1+2 as hero bands + compact grid
+  STYLE_PULSE       = 6,  // accent-washed blocks, tint follows load
   STYLE_COUNT
 };
 
 constexpr uint8_t STYLE_DEFAULT = STYLE_TILES;
 constexpr uint8_t STYLE_ACTIVE_MASK =
-  (1u << STYLE_BIG_NUMBERS) | (1u << STYLE_TILES) | (1u << STYLE_HERO);
+  (1u << STYLE_BIG_NUMBERS) | (1u << STYLE_TILES) | (1u << STYLE_HERO) |
+  (1u << STYLE_STRIPS) | (1u << STYLE_DUO) | (1u << STYLE_PULSE);
 
 inline uint8_t normalizeDisplayStyle(uint8_t style) {
   return (style >= STYLE_BIG_NUMBERS && style < STYLE_COUNT)

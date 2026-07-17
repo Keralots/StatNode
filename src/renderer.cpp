@@ -411,29 +411,12 @@ static void drawMeterBar(int16_t x, int16_t y, int16_t w, int16_t h,
   }
 }
 
-// Sparkline over a slot's history ring, scaled to the local min/max (padded so
-// a flat line does not hug an edge), 1px polyline with a bright endpoint dot.
-// Composed in a reusable offscreen sprite and pushed in one blit so the
-// clear+redraw never flashes at the packet cadence; falls back to direct
-// drawing (slightly blinky) only if the sprite cannot be allocated.
-static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
-                          int16_t x, int16_t y,
-                          int16_t w, int16_t h, uint16_t color, uint16_t bg,
-                          bool advance) {
-  if (w < 8 || h < 8) return;
-
-  if (gSparkW != w || gSparkH != h) {
-    gSparkSpr.deleteSprite();
-    gSparkSpr.setColorDepth(16);
-    if (gSparkSpr.createSprite(w, h)) { gSparkW = w; gSparkH = h; }
-    else { gSparkW = gSparkH = 0; gSparkFails++; }
-  }
-  const bool off = (gSparkW == w && gSparkH == h);
-  lgfx::LovyanGFX& g = off ? (lgfx::LovyanGFX&)gSparkSpr : (lgfx::LovyanGFX&)tft;
-  const int16_t ox = off ? 0 : x;
-  const int16_t oy = off ? 0 : y;
-
-  g.fillRect(ox, oy, w, h, bg);
+// Chart core shared by the sparkline path and the strips lanes: smoothed
+// bounds plus the column-wise area/line render, drawn into any target (panel
+// or a compose sprite) at the given offset. The caller owns the background.
+static void sparkPlot(lgfx::LovyanGFX& g, const SlotHistory& hist,
+                      uint8_t slotIdx, int16_t ox, int16_t oy,
+                      int16_t w, int16_t h, uint16_t color, bool advance) {
   if (hist.count >= 2) {
     float wlo = pcHistoryAt(hist, 0), whi = wlo;
     for (uint8_t i = 1; i < hist.count; i++) {
@@ -504,6 +487,32 @@ static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
     if (dotY > oy + h - 1 - dotR) dotY = oy + h - 1 - dotR;
     g.fillCircle(ox + plotW - 1, dotY, dotR, themeSettings.valueColor);
   }
+}
+
+// Sparkline over a slot's history ring, scaled to the local min/max (padded so
+// a flat line does not hug an edge), 1px polyline with a bright endpoint dot.
+// Composed in a reusable offscreen sprite and pushed in one blit so the
+// clear+redraw never flashes at the packet cadence; falls back to direct
+// drawing (slightly blinky) only if the sprite cannot be allocated.
+static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
+                          int16_t x, int16_t y,
+                          int16_t w, int16_t h, uint16_t color, uint16_t bg,
+                          bool advance) {
+  if (w < 8 || h < 8) return;
+
+  if (gSparkW != w || gSparkH != h) {
+    gSparkSpr.deleteSprite();
+    gSparkSpr.setColorDepth(16);
+    if (gSparkSpr.createSprite(w, h)) { gSparkW = w; gSparkH = h; }
+    else { gSparkW = gSparkH = 0; gSparkFails++; }
+  }
+  const bool off = (gSparkW == w && gSparkH == h);
+  lgfx::LovyanGFX& g = off ? (lgfx::LovyanGFX&)gSparkSpr : (lgfx::LovyanGFX&)tft;
+  const int16_t ox = off ? 0 : x;
+  const int16_t oy = off ? 0 : y;
+
+  g.fillRect(ox, oy, w, h, bg);
+  sparkPlot(g, hist, slotIdx, ox, oy, w, h, color, advance);
   if (off) {
     gSparkSpr.pushSprite(tft_ptr, x, y);
     // pushSprite may queue the transfer via SPI DMA and return; the shared
@@ -1001,6 +1010,410 @@ static void drawHeroScreen(bool fr) {
   }
 }
 
+// ---------------------------------------------------------------------------
+//  STYLE_STRIPS - one full-width sparkline lane per metric, the label and
+//  reading laid over the chart. Each lane composes offscreen and pushes as one
+//  blit; because the text sits on the chart, the whole lane repaints at the
+//  chart cadence (sparkRedrawSec), so readings ride that pace by design.
+// ---------------------------------------------------------------------------
+static void drawStripsScreen(bool fr) {
+  const int16_t w = (int16_t)tft.width();
+  const int16_t h = (int16_t)tft.height();
+  const int16_t gridH = h;
+  const uint16_t bg = dispSettings.bgColor;
+
+  VisSlot vis[NUM_GAUGE_SLOTS];
+  uint8_t n = collectVisibleSlots(vis);
+  if (!layoutCountReady(n)) return;
+
+  static uint8_t lastN = 0xFF;
+  if (!gCaptureRender && n != lastN) {
+    if (!fr) {
+      tft.fillRect(0, 0, w, gridH, bg);
+      resetGaugeTextCache();
+    }
+    lastN = n;
+    fr = true;
+  }
+
+  if (n == 0) {
+    drawNoMetricsHint(w, gridH, fr);
+    return;
+  }
+
+  static uint32_t lastSparkMs = 0;
+  bool sparkTick = true;
+  if (!gCaptureRender) {
+    sparkTick = (pcData.lastReceived != 0) &&
+                (millis() - lastSparkMs >= (uint32_t)sparkRedrawSec * 1000UL);
+    if (sparkTick) lastSparkMs = millis();
+  }
+  if (!(sparkTick || fr)) return;
+
+  const int16_t rowH = gridH / n;
+  RendererWrite rw(tft);
+
+  static lgfx::LGFX_Sprite rowSpr;
+  static int16_t rsW = 0, rsH = 0;
+  const bool off = ensureSprite(rowSpr, rsW, rsH, w, rowH);
+
+  for (uint8_t i = 0; i < n; i++) {
+    const int16_t y = i * rowH;
+    const PcMetric& m = *vis[i].metric;
+    const GaugeSlot& s = *vis[i].slot;
+    const char* label = vis[i].label;
+    const float scale = slotScaleMax(s, m);
+    const bool warn = slotWarn(vis[i].slotIdx, m.value, scale);
+    const uint16_t lineColor = s.arcColor;
+
+    MetricText text;
+    formatMetricText(m, m.value, text);
+    char probe[12];
+    slotProbe(s, m, probe, sizeof(probe));
+
+    lgfx::LovyanGFX& g = off ? (lgfx::LovyanGFX&)rowSpr : (lgfx::LovyanGFX&)tft;
+    const int16_t oy = off ? 0 : y;
+
+    if (off) {
+      resetFontCache();   // fonts were loaded on the panel, retarget them
+      rowSpr.fillSprite(bg);
+    } else {
+      tft.fillRect(0, y, w, rowH, bg);
+    }
+    sparkPlot(g, pcHistory[vis[i].slotIdx], vis[i].slotIdx,
+              0, oy + 2, w, rowH - 4, lineColor, sparkTick);
+    if (i) g.drawFastHLine(0, oy, w, dispSettings.trackColor);
+
+    // Overlay text draws foreground-only: the lane is composed fresh, so
+    // there is no previous text to erase.
+    setFont(g, FONT_SMALL);
+    g.setTextDatum(TL_DATUM);
+    g.setTextColor(themedLabelColor(lineColor, bg, CLR_TEXT_DIM));
+    g.drawString(label, 6, oy + 3);
+    const int16_t unitW = g.textWidth(text.unit);
+
+    {
+      static const FontID steps[] = { FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL };
+      uint8_t fi = 0;
+      FontID base = (rowH >= 34) ? FONT_LARGE : FONT_BODY;
+      while (fi < 3 && steps[fi] != base) fi++;
+      setFont(g, steps[fi]);
+      const int16_t maxW = w / 2 - unitW - 12;
+      while (fi < 3 && g.textWidth(probe) > maxW) setFont(g, steps[++fi]);
+    }
+    const int16_t cy = oy + rowH / 2;
+    g.setTextDatum(MR_DATUM);
+    g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
+    g.drawString(text.value, w - 6 - unitW - 5, cy);
+    setFont(g, FONT_SMALL);
+    g.setTextColor(themeSettings.secondaryColor);
+    g.drawString(text.unit, w - 6, cy);
+    g.setTextDatum(TL_DATUM);
+
+    if (off) {
+      rowSpr.pushSprite(tft_ptr, 0, y);
+      tft.waitDMA();      // shared sprite: barrier before the next lane refill
+      resetFontCache();   // next panel setFont must reload onto the panel
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  STYLE_DUO - slots 1 and 2 each get a hero band (label, large value, chart);
+//  the remaining metrics condense into a two-column grid with meter bars.
+//  With one bound metric the band sits on top and the chart fills the rest.
+// ---------------------------------------------------------------------------
+static void drawDuoScreen(bool fr) {
+  const int16_t w = (int16_t)tft.width();
+  const int16_t h = (int16_t)tft.height();
+  const int16_t gridH = h;
+  const uint16_t bg = dispSettings.bgColor;
+
+  VisSlot vis[NUM_GAUGE_SLOTS];
+  uint8_t n = collectVisibleSlots(vis);
+  if (!layoutCountReady(n)) return;
+
+  static uint8_t lastN = 0xFF;
+  if (!gCaptureRender && n != lastN) {
+    if (!fr) {
+      tft.fillRect(0, 0, w, gridH, bg);
+      resetGaugeTextCache();
+    }
+    lastN = n;
+    fr = true;
+  }
+
+  if (n == 0) {
+    drawNoMetricsHint(w, gridH, fr);
+    return;
+  }
+
+  static uint32_t lastSparkMs = 0;
+  bool sparkTick = true;
+  if (!gCaptureRender) {
+    sparkTick = (pcData.lastReceived != 0) &&
+                (millis() - lastSparkMs >= (uint32_t)sparkRedrawSec * 1000UL);
+    if (sparkTick) lastSparkMs = millis();
+  }
+
+  const uint8_t bands = (n >= 2) ? 2 : 1;
+  const int16_t bandH = (n == 1) ? (gridH * 2) / 5
+                       : (n == 2) ? gridH / 2
+                       : (gridH * 32) / 100;
+  const int16_t chartX = w / 2 - 2;
+
+  RendererWrite rw(tft);
+
+  for (uint8_t b = 0; b < bands; b++) {
+    const int16_t y = b * bandH;
+    const PcMetric& m = *vis[b].metric;
+    const GaugeSlot& s = *vis[b].slot;
+    const char* label = vis[b].label;
+    const float scale = slotScaleMax(s, m);
+    const bool warn = slotWarn(vis[b].slotIdx, m.value, scale);
+
+    MetricText text;
+    formatMetricText(m, m.value, text);
+    char key[16];
+    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    if (gaugeTextChanged(3, y + bandH, key, label, fr)) {
+      const int16_t valueW = (n == 1) ? w : chartX;
+      const int16_t baseY = y + bandH - 12;
+      const int16_t bandV = bandH - 36;
+
+      setFont(tft, FONT_SMALL);
+      tft.setTextDatum(TL_DATUM);
+      tft.setTextColor(themedLabelColor(s.arcColor, bg, CLR_TEXT_DARK), bg);
+      tft.drawString(label, 10, y + 6);
+      const int16_t lw = tft.textWidth(label);
+      const int16_t lfh = (int16_t)tft.fontHeight();
+      tft.fillRect(10 + lw, y + 6, valueW - 20 - lw, lfh, bg);
+      const int16_t gapY = y + 6 + lfh;
+      if (baseY - bandV > gapY)
+        tft.fillRect(10, gapY, valueW - 20, baseY - bandV - gapY, bg);
+
+      const int16_t unitW = tft.textWidth(text.unit);
+      const int16_t availW = valueW - 20 - unitW - 6;
+      char probe[12];
+      slotProbe(s, m, probe, sizeof(probe));
+      fitFontForWidth(probe, availW, FONT_XLARGE);
+      scaleValueToCell(probe, availW, bandV);
+      static int16_t bandPrevVw[2] = { -1, -1 };
+      if (fr && !gCaptureRender) bandPrevVw[b] = -1;
+      drawValueRegionL(10, baseY, valueW - 20, bandV,
+                       text.value, text.unit,
+                       warn ? dispSettings.warnColor : themeSettings.valueColor, bg,
+                       gCaptureRender ? nullptr : &bandPrevVw[b]);
+    }
+
+    if (fr) tft.drawFastHLine(8, y + bandH - 1, w - 16, dispSettings.trackColor);
+
+    if (sparkTick || fr) {
+      if (n >= 2) {
+        drawSparkline(pcHistory[vis[b].slotIdx], vis[b].slotIdx,
+                      chartX, y + 8, w - chartX - 8, bandH - 18,
+                      s.arcColor, bg, sparkTick);
+      } else {
+        drawSparkline(pcHistory[vis[b].slotIdx], vis[b].slotIdx,
+                      12, bandH + 8, w - 24, gridH - bandH - 16,
+                      s.arcColor, bg, sparkTick);
+      }
+    }
+  }
+
+  if (n <= 2) return;
+
+  // Grid for the remaining metrics: label left, value right, meter beneath.
+  const int16_t y0 = 2 * bandH + 2;
+  const uint8_t rest = n - 2;
+  const uint8_t rows = (rest + 1) / 2;
+  const int16_t cellH = (gridH - y0) / rows;
+  const int16_t cellW = w / 2;
+  for (uint8_t i = 0; i < rest; i++) {
+    const PcMetric& m = *vis[2 + i].metric;
+    const GaugeSlot& s = *vis[2 + i].slot;
+    const char* label = vis[2 + i].label;
+    const float scale = slotScaleMax(s, m);
+    const float frac = slotFraction(m.value, scale);
+    const bool warn = slotWarn(vis[2 + i].slotIdx, m.value, scale);
+    const int16_t x = (i % 2) * cellW;
+    const int16_t y = y0 + (i / 2) * cellH;
+    const int16_t cy = y + (cellH - 10) / 2;
+
+    MetricText text;
+    formatMetricText(m, m.value, text);
+    char key[16];
+    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    if (!gaugeTextChanged(x + cellW / 2, cy, key, label, fr)) continue;
+
+    setFont(tft, FONT_SMALL);
+    tft.setTextDatum(ML_DATUM);
+    tft.setTextColor(themedLabelColor(s.arcColor, bg, CLR_TEXT_DIM), bg);
+    tft.drawString(label, x + 10, cy);
+    const int16_t labelW = tft.textWidth(label);
+
+    char vb[20];
+    snprintf(vb, sizeof(vb), "%s %s", text.value, text.unit);
+    MetricText probeText;
+    formatMetricText(m, scale, probeText);
+    char valueProbe[20];
+    snprintf(valueProbe, sizeof(valueProbe), "%s %s",
+             probeText.value, probeText.unit);
+    fitFontForWidth(valueProbe, cellW - 26 - labelW, FONT_BODY);
+    drawValueRegionR(x + 10 + labelW + 6, x + cellW - 10, cy, cellH - 14, vb,
+                     warn ? dispSettings.warnColor : themeSettings.valueColor, bg);
+
+    drawMeterBar(x + 10, y + cellH - 9, cellW - 20, 3, frac,
+                 warn ? dispSettings.warnColor : s.arcColor);
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  STYLE_PULSE - one accent-washed block per metric; the wash intensity
+//  follows the load fraction (quantized with hysteresis so blocks do not
+//  shimmer at the packet rate). Built for reading the machine's state from
+//  across the room rather than reading digits.
+// ---------------------------------------------------------------------------
+static void drawPulseScreen(bool fr) {
+  const int16_t w = (int16_t)tft.width();
+  const int16_t h = (int16_t)tft.height();
+  const int16_t gridH = h;
+  const uint16_t bg = dispSettings.bgColor;
+
+  VisSlot vis[NUM_GAUGE_SLOTS];
+  uint8_t n = collectVisibleSlots(vis);
+  if (!layoutCountReady(n)) return;
+
+  static uint8_t lastN = 0xFF;
+  if (!gCaptureRender && n != lastN) {
+    if (!fr) {
+      tft.fillRect(0, 0, w, gridH, bg);
+      resetGaugeTextCache();
+    }
+    lastN = n;
+    fr = true;
+  }
+
+  if (n == 0) {
+    drawNoMetricsHint(w, gridH, fr);
+    return;
+  }
+
+  const uint8_t cols = (n <= 2) ? 1 : 2;
+  const uint8_t rows = (n + cols - 1) / cols;
+  const int16_t cellW = w / cols;
+  const int16_t cellH = gridH / rows;
+  const int16_t blockW = cellW - 4;
+  const int16_t blockH = cellH - 4;
+
+  RendererWrite rw(tft);
+
+  static uint8_t lastQ[NUM_GAUGE_SLOTS];
+  static uint8_t qInit = 0;
+
+  for (uint8_t i = 0; i < n; i++) {
+    const int16_t x = (i % cols) * cellW;
+    const int16_t y = (i / cols) * cellH;
+    const PcMetric& m = *vis[i].metric;
+    const GaugeSlot& s = *vis[i].slot;
+    const char* label = vis[i].label;
+    const float scale = slotScaleMax(s, m);
+    const float frac = slotFraction(m.value, scale);
+    const bool warn = slotWarn(vis[i].slotIdx, m.value, scale);
+    const uint8_t slotIdx = vis[i].slotIdx;
+    const uint8_t bit = (uint8_t)(1u << slotIdx);
+
+    // Quantized wash intensity, 8 steps, with hysteresis: leave the current
+    // step only when the fraction moves clearly past the boundary, so a value
+    // hovering on a step edge does not flip the block back and forth.
+    const float qf = frac * 8.0f;
+    uint8_t q;
+    if ((qInit & bit) && fabsf(qf - (float)lastQ[slotIdx]) < 0.62f) {
+      q = lastQ[slotIdx];
+    } else {
+      q = (uint8_t)(qf + 0.5f);
+      if (q > 8) q = 8;
+    }
+    if (!gCaptureRender) { lastQ[slotIdx] = q; qInit |= bit; }
+
+    const uint8_t alpha = warn ? (uint8_t)(77 + q * 14) : (uint8_t)(26 + q * 13);
+    const uint16_t base = warn ? dispSettings.warnColor : s.arcColor;
+    const uint16_t cellBg = blend565(alpha, base, bg);
+    const uint16_t textC = autoContrast565(cellBg);
+    const uint16_t labelC = blend565(200, textC, cellBg);
+
+    MetricText text;
+    formatMetricText(m, m.value, text);
+    char key[16];
+    snprintf(key, sizeof(key), "%s%s%u", text.value, warn ? "!" : "", q);
+    if (!gaugeTextChanged(x + cellW / 2, y + cellH / 2, key, label, fr)) continue;
+
+    char probe[12];
+    slotProbe(s, m, probe, sizeof(probe));
+
+    static lgfx::LGFX_Sprite blockSpr;
+    static int16_t bsW = 0, bsH = 0;
+    if (ensureSprite(blockSpr, bsW, bsH, blockW, blockH)) {
+      resetFontCache();   // fonts were loaded on the panel, retarget them
+      blockSpr.fillSprite(bg);
+      blockSpr.fillRoundRect(0, 0, blockW, blockH, 5, cellBg);
+
+      setFont(blockSpr, FONT_SMALL);
+      blockSpr.setTextDatum(TL_DATUM);
+      blockSpr.setTextColor(labelC, cellBg);
+      blockSpr.drawString(label, 9, 7);
+
+      const int16_t unitW = blockSpr.textWidth(text.unit);
+      {
+        static const FontID steps[] = { FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL };
+        uint8_t fi = 0;
+        setFont(blockSpr, steps[fi]);
+        const int16_t maxW = blockW - 18 - unitW - 5;
+        while (fi < 3 && blockSpr.textWidth(probe) > maxW) setFont(blockSpr, steps[++fi]);
+        // Scale up when the block allows it - fewer metrics, bigger digits.
+        float sc = 1.0f;
+        const int16_t maxH = blockH - 30;
+        for (float trySc : { 2.0f, 1.5f }) {
+          blockSpr.setTextSize(trySc);
+          if (blockSpr.fontHeight() <= maxH && blockSpr.textWidth(probe) <= maxW) {
+            sc = trySc;
+            break;
+          }
+        }
+        blockSpr.setTextSize(sc);
+      }
+      blockSpr.setTextDatum(BL_DATUM);
+      blockSpr.setTextColor(textC, cellBg);
+      blockSpr.drawString(text.value, 9, blockH - 8);
+      const int16_t vw = blockSpr.textWidth(text.value);
+      blockSpr.setTextSize(1.0f);
+      setFont(blockSpr, FONT_SMALL);
+      blockSpr.setTextColor(labelC, cellBg);
+      blockSpr.drawString(text.unit, 9 + vw + 5, blockH - 8);
+
+      blockSpr.pushSprite(tft_ptr, x + 2, y + 2);
+      tft.waitDMA();      // shared sprite: barrier before the next block refill
+      resetFontCache();   // next panel setFont must reload onto the panel
+    } else {
+      // Sprite unavailable: direct paint (blinks on wash step change only).
+      tft.fillRoundRect(x + 2, y + 2, blockW, blockH, 5, cellBg);
+      setFont(tft, FONT_SMALL);
+      tft.setTextDatum(TL_DATUM);
+      tft.setTextColor(labelC, cellBg);
+      tft.drawString(label, x + 11, y + 9);
+      fitFontForWidth(probe, blockW - 18, FONT_XLARGE);
+      tft.setTextDatum(BL_DATUM);
+      tft.setTextColor(textC, cellBg);
+      tft.drawString(text.value, x + 11, y + 2 + blockH - 8);
+      const int16_t vw = tft.textWidth(text.value);
+      setFont(tft, FONT_SMALL);
+      tft.setTextColor(labelC, cellBg);
+      tft.drawString(text.unit, x + 11 + vw + 5, y + 2 + blockH - 8);
+      tft.setTextDatum(TL_DATUM);
+    }
+  }
+}
+
 // Status badge - the LHM trouble indicator now that the bottom bar is gone.
 // A small dot in the top-right corner, drawn ONLY while the companion reports
 // a non-OK status, so the screen stays clean in the healthy steady state.
@@ -1040,6 +1453,9 @@ static void drawMonitorStyled(bool fr) {
   switch (displayStyle) {
     case STYLE_BIG_NUMBERS: drawBigNumbersScreen(fr); break;
     case STYLE_HERO:        drawHeroScreen(fr);       break;
+    case STYLE_STRIPS:      drawStripsScreen(fr);     break;
+    case STYLE_DUO:         drawDuoScreen(fr);        break;
+    case STYLE_PULSE:       drawPulseScreen(fr);      break;
     case STYLE_TILES:
     default:                drawTilesScreen(fr);      break;
   }
