@@ -534,12 +534,17 @@ static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t ba
   tft.drawString(val, x, baseY);
   const int16_t vw = tft.textWidth(val);
   tft.setTextSize(1.0f);
-  // The unit and the vacated-pixel clears only need repainting when the
-  // value's pixel width changed (digit count change) - doing it every update
-  // made the unit blink at the packet rate. prevVw==nullptr forces a full
-  // repaint without touching state (capture path).
-  if (prevVw && *prevVw == vw) return;
+  // The band above the glyph box is background whenever the region is
+  // healthy, so repainting it is invisible - and it evicts stale pixels left
+  // by an earlier taller font or a layout that once painted there.
   if (bandH > fh) tft.fillRect(x, baseY - bandH, bandW, bandH - fh, bg);
+  // The unit and the vacated-pixel clears only need repainting when the
+  // value's glyph box changed - doing it every update made the unit blink at
+  // the packet rate. The key folds in the font height so a font change with
+  // an equal pixel width still repaints (the unit rides the glyph height).
+  // prevVw==nullptr forces a full repaint without touching state (capture).
+  const int16_t key = (int16_t)(uint16_t)((vw & 0x01FF) | ((fh & 0x7F) << 9));
+  if (prevVw && *prevVw == key) return;
   if (bandW > vw) tft.fillRect(x + vw, baseY - fh, bandW - vw, fh, bg);
   if (unit && unit[0]) {
     setFont(tft, FONT_SMALL);
@@ -549,7 +554,7 @@ static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t ba
     tft.setTextColor(themeSettings.secondaryColor, bg);
     tft.drawString(unit, x + vw + 5, unitBaseY);
   }
-  if (prevVw) *prevVw = vw;
+  if (prevVw) *prevVw = key;
 }
 
 // Right-aligned (middle datum) value whose left edge moves as digits change:
@@ -654,14 +659,19 @@ static void drawBigNumbersScreen(bool fr) {
     const int16_t labelY = y + (roomy ? 8 : 4);
     tft.drawString(label, x + padX, labelY);
     const int16_t lw = tft.textWidth(label);
-    tft.fillRect(x + padX + lw, labelY, cellW - 2 * padX - lw, 14, bg);
+    const int16_t lfh = (int16_t)tft.fontHeight();
+    tft.fillRect(x + padX + lw, labelY, cellW - 2 * padX - lw, lfh, bg);
 
     // Value (bottom-left, above the meter) + dim unit after it. The value
     // scales up in tall cells, so fewer bound metrics = bigger digits.
-    setFont(tft, FONT_SMALL);
     const int16_t unitW = tft.textWidth(text.unit);
     const int16_t baseY = y + cellH - (roomy ? 20 : 12);
     const int16_t bandH = cellH - (roomy ? 44 : 30);
+    // Strip between the label bottom and the value band self-heals the same
+    // way the hero head does: background repaint, invisible when healthy.
+    const int16_t gapY = labelY + lfh;
+    if (baseY - bandH > gapY)
+      tft.fillRect(x + padX, gapY, cellW - 2 * padX, baseY - bandH - gapY, bg);
     const int16_t availW = cellW - 2 * padX - unitW - 5;
     char probe[12];
     slotProbe(s, m, probe, sizeof(probe));
@@ -891,18 +901,24 @@ static void drawHeroScreen(bool fr) {
   // Anchor off-grid (3, heroH) so it can never collide with a row anchor.
   if (gaugeTextChanged(3, heroH, key, heroLabel, fr)) {
     const int16_t heroW = (n >= 2) ? (w / 2) : w;
+    const int16_t baseY = heroH - 12;
+    const int16_t bandH = heroH - 36;
 
     setFont(tft, FONT_SMALL);
     tft.setTextDatum(TL_DATUM);
     tft.setTextColor(themedLabelColor(hs.arcColor, bg, CLR_TEXT_DARK), bg);
     tft.drawString(heroLabel, 12, 8);
     const int16_t lw = tft.textWidth(heroLabel);
-    tft.fillRect(12 + lw, 8, heroW - 24 - lw, 14, bg);
+    const int16_t lfh = (int16_t)tft.fontHeight();
+    tft.fillRect(12 + lw, 8, heroW - 24 - lw, lfh, bg);
+    // Strip between the label bottom and the value band: nothing legitimate
+    // renders there, so a background repaint is invisible and evicts residue
+    // left by an earlier layout or screen.
+    const int16_t gapY = 8 + lfh;
+    if (baseY - bandH > gapY)
+      tft.fillRect(12, gapY, heroW - 24, baseY - bandH - gapY, bg);
 
-    setFont(tft, FONT_SMALL);
     const int16_t unitW = tft.textWidth(heroText.unit);
-    const int16_t baseY = heroH - 12;
-    const int16_t bandH = heroH - 36;
     const int16_t availW = heroW - 24 - unitW - 6;
     char probe[12];
     slotProbe(hs, hm, probe, sizeof(probe));
