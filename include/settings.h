@@ -182,6 +182,7 @@ extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
 
 void loadSettings();
 void saveSettings();
+bool factoryResetSettings();
 void defaultDisplaySettings(DisplaySettings& ds);
 void defaultNetworkSettings(NetworkSettings& ns);
 void defaultGaugeMapping(GaugeMapping& gm);

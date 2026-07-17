@@ -21,7 +21,11 @@ static WebServer server(80);
 
 // Deferred restart (so the HTTP response flushes before reboot).
 static unsigned long restartAt = 0;
-static void scheduleRestart(unsigned long delayMs) { restartAt = millis() + delayMs; }
+static bool eraseWifiAtRestart = false;
+static void scheduleRestart(unsigned long delayMs, bool eraseWifi = false) {
+  restartAt = millis() + delayMs;
+  eraseWifiAtRestart = eraseWifi;
+}
 
 // OTA state.
 static bool   otaInProgress = false;
@@ -242,6 +246,105 @@ static void handleApiConfig() {
 }
 
 // ---------------------------------------------------------------------------
+//  Portable configuration backup
+//
+//  WiFi credentials are intentionally omitted. A backup can therefore be
+//  shared between devices without exposing the network password, and restore
+//  never disconnects a device by replacing its SSID without a matching key.
+// ---------------------------------------------------------------------------
+static const char* CONFIG_BACKUP_FORMAT = "pcmonitorcolor-config";
+static const uint8_t CONFIG_BACKUP_SCHEMA = 1;
+static const size_t CONFIG_IMPORT_MAX_BYTES = 16 * 1024;
+
+static void handleConfigExport() {
+  JsonDocument doc;
+  doc["format"] = CONFIG_BACKUP_FORMAT;
+  doc["schema"] = CONFIG_BACKUP_SCHEMA;
+  doc["product"] = PRODUCT_NAME;
+  doc["firmware"] = FW_VERSION;
+  doc["board"] = BOARD_VARIANT;
+  doc["wifiCredentialsIncluded"] = false;
+
+  JsonObject display = doc["display"].to<JsonObject>();
+  display["style"] = displayStyle;
+  display["rotation"] = dispSettings.rotation;
+  display["brightness"] = brightness;
+  display["smoothing"] = dispSettings.gaugeSmoothing;
+  display["sparkSeconds"] = sparkRedrawSec;
+  display["tempScale"] = dispSettings.tempScaleMax;
+  display["powerScale"] = dispSettings.powerScaleW;
+  display["warnThreshold"] = dispSettings.warnThresholdPct;
+  display["smallLabels"] = dispSettings.smallLabels;
+  display["invertColors"] = dispSettings.invertColors;
+  display["cydClassic"] = dispSettings.cydPanelClassic;
+
+  JsonObject backlight = doc["backlight"].to<JsonObject>();
+  backlight["nightEnabled"] = backlightSettings.nightEnabled != 0;
+  backlight["nightBrightness"] = backlightSettings.nightBrightness;
+  backlight["nightStartMinute"] = backlightSettings.nightStartMinute;
+  backlight["nightEndMinute"] = backlightSettings.nightEndMinute;
+  backlight["offlineSleepMinutes"] = backlightSettings.offlineSleepMinutes;
+
+  JsonObject touch = doc["touch"].to<JsonObject>();
+  touch["enabled"] = touchSettings.enabled != 0;
+  touch["pin"] = touchSettings.pin;
+  touch["activeHigh"] = touchSettings.activeHigh != 0;
+  touch["shortAction"] = touchSettings.shortAction;
+  touch["longAction"] = touchSettings.longAction;
+  touch["styleMask"] = touchSettings.styleMask;
+  touch["rememberStyle"] = touchSettings.rememberStyle != 0;
+
+  JsonObject colors = doc["colors"].to<JsonObject>();
+  addHtmlColor(colors, "bg", dispSettings.bgColor);
+  addHtmlColor(colors, "track", dispSettings.trackColor);
+  addHtmlColor(colors, "warn", dispSettings.warnColor);
+  addHtmlColor(colors, "clock", dispSettings.clockTimeColor);
+  addHtmlColor(colors, "date", dispSettings.clockDateColor);
+  addHtmlColor(colors, "value", themeSettings.valueColor);
+  addHtmlColor(colors, "label", themeSettings.labelColor);
+  addHtmlColor(colors, "secondary", themeSettings.secondaryColor);
+  addHtmlColor(colors, "tile", themeSettings.tileColor);
+  colors["labelMode"] = themeSettings.labelMode;
+  colors["tileTint"] = themeSettings.tileTintPct;
+
+  JsonObject clock = doc["clock"].to<JsonObject>();
+  clock["face"] = clockFace;
+  clock["use24h"] = netSettings.use24h;
+  clock["dateFormat"] = netSettings.dateFormat;
+  clock["hideDate"] = dispSettings.hideClockDate;
+  clock["timezone"] = netSettings.timezoneStr;
+
+  JsonObject network = doc["network"].to<JsonObject>();
+  network["hostname"] = netSettings.hostname;
+  network["mdns"] = netSettings.mdnsEnabled;
+  network["showIp"] = netSettings.showIPAtStartup;
+  network["dhcp"] = netSettings.useDHCP;
+  network["staticIp"] = netSettings.staticIP;
+  network["gateway"] = netSettings.gateway;
+  network["subnet"] = netSettings.subnet;
+  network["dns"] = netSettings.dns;
+
+  JsonArray gauges = doc["gauges"].to<JsonArray>();
+  char colorBuf[8];
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+    JsonObject slot = gauges.add<JsonObject>();
+    slot["metricId"] = gaugeMap.slots[i].metricId;
+    slot["type"] = gaugeMap.slots[i].type;
+    slot["scaleMax"] = gaugeMap.slots[i].scaleMax;
+    slot["label"] = gaugeLabels.labels[i];
+    rgb565ToHtml(gaugeMap.slots[i].arcColor, colorBuf);
+    slot["color"] = colorBuf;
+  }
+
+  String out;
+  serializeJson(doc, out);
+  server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
+  server.sendHeader("Content-Disposition",
+                    "attachment; filename=pcmonitorcolor-config.json");
+  server.send(200, "application/json", out);
+}
+
+// ---------------------------------------------------------------------------
 //  Save handlers
 // ---------------------------------------------------------------------------
 static void handleSaveDisplay() {
@@ -448,6 +551,338 @@ static bool validIp(const String& value, bool allowEmpty = false) {
   if (allowEmpty && value.length() == 0) return true;
   IPAddress parsed;
   return parsed.fromString(value);
+}
+
+static bool backupFieldError(String& error, const char* path,
+                             const char* expectation) {
+  error = "Invalid backup field '";
+  error += path;
+  error += "': ";
+  error += expectation;
+  return false;
+}
+
+static bool readBackupInteger(JsonObjectConst object, const char* key,
+                              long minValue, long maxValue, long& out,
+                              String& error, const char* path) {
+  JsonVariantConst value = object[key];
+  if (value.isNull() || !value.is<long>())
+    return backupFieldError(error, path, "expected an integer");
+  const long parsed = value.as<long>();
+  if (parsed < minValue || parsed > maxValue)
+    return backupFieldError(error, path, "value is out of range");
+  out = parsed;
+  return true;
+}
+
+static bool readBackupBool(JsonObjectConst object, const char* key, bool& out,
+                           String& error, const char* path) {
+  JsonVariantConst value = object[key];
+  if (value.isNull() || !value.is<bool>())
+    return backupFieldError(error, path, "expected true or false");
+  out = value.as<bool>();
+  return true;
+}
+
+static bool readBackupString(JsonObjectConst object, const char* key,
+                             size_t maxLength, const char*& out,
+                             String& error, const char* path) {
+  JsonVariantConst value = object[key];
+  if (value.isNull() || !value.is<const char*>())
+    return backupFieldError(error, path, "expected text");
+  out = value.as<const char*>();
+  if (!out || strlen(out) > maxLength)
+    return backupFieldError(error, path, "text is too long");
+  return true;
+}
+
+static bool isHexDigit(char c) {
+  return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') ||
+         (c >= 'A' && c <= 'F');
+}
+
+static bool readBackupColor(JsonObjectConst object, const char* key,
+                            uint16_t& out, String& error, const char* path) {
+  const char* value = nullptr;
+  if (!readBackupString(object, key, 7, value, error, path)) return false;
+  if (strlen(value) != 7 || value[0] != '#')
+    return backupFieldError(error, path, "expected a #RRGGBB color");
+  for (uint8_t i = 1; i < 7; i++) {
+    if (!isHexDigit(value[i]))
+      return backupFieldError(error, path, "expected a #RRGGBB color");
+  }
+  out = htmlToRgb565(value);
+  return true;
+}
+
+static void handleConfigImport() {
+  const String& body = server.arg("plain");
+  if (body.length() == 0) {
+    sendJsonMessage(400, false, "Choose a PCMonitorColor backup file.");
+    return;
+  }
+  if (body.length() > CONFIG_IMPORT_MAX_BYTES) {
+    sendJsonMessage(413, false, "The configuration backup is too large.");
+    return;
+  }
+
+  JsonDocument doc;
+  DeserializationError parseError = deserializeJson(doc, body);
+  if (parseError) {
+    sendJsonMessage(400, false, "The selected file is not valid JSON.");
+    return;
+  }
+  JsonObjectConst root = doc.as<JsonObjectConst>();
+  if (root.isNull()) {
+    sendJsonMessage(400, false, "The backup root must be a JSON object.");
+    return;
+  }
+
+  const char* format = nullptr;
+  String error;
+  if (!readBackupString(root, "format", 40, format, error, "format") ||
+      strcmp(format, CONFIG_BACKUP_FORMAT) != 0) {
+    sendJsonMessage(400, false, "This is not a PCMonitorColor configuration backup.");
+    return;
+  }
+  const char* product = nullptr;
+  if (!readBackupString(root, "product", 40, product, error, "product") ||
+      strcmp(product, PRODUCT_NAME) != 0) {
+    sendJsonMessage(400, false, "This backup belongs to a different product.");
+    return;
+  }
+  long integer = 0;
+  if (!readBackupInteger(root, "schema", CONFIG_BACKUP_SCHEMA,
+                         CONFIG_BACKUP_SCHEMA, integer, error, "schema")) {
+    sendJsonMessage(400, false, "This backup schema is not supported by this firmware.");
+    return;
+  }
+
+  JsonObjectConst display = root["display"].as<JsonObjectConst>();
+  JsonObjectConst backlight = root["backlight"].as<JsonObjectConst>();
+  JsonObjectConst touch = root["touch"].as<JsonObjectConst>();
+  JsonObjectConst colors = root["colors"].as<JsonObjectConst>();
+  JsonObjectConst clock = root["clock"].as<JsonObjectConst>();
+  JsonObjectConst network = root["network"].as<JsonObjectConst>();
+  JsonArrayConst gauges = root["gauges"].as<JsonArrayConst>();
+  if (display.isNull() || backlight.isNull() || touch.isNull() ||
+      colors.isNull() || clock.isNull() || network.isNull() || gauges.isNull()) {
+    sendJsonMessage(400, false, "The backup is incomplete.");
+    return;
+  }
+  if (gauges.size() != NUM_GAUGE_SLOTS) {
+    sendJsonMessage(400, false, "The backup has the wrong number of metric slots.");
+    return;
+  }
+
+  DisplaySettings nextDisplay = dispSettings;
+  NetworkSettings nextNetwork = netSettings;
+  GaugeMapping nextGaugeMap = gaugeMap;
+  GaugeLabels nextGaugeLabels = gaugeLabels;
+  BacklightSettings nextBacklight = backlightSettings;
+  TouchSettings nextTouch = touchSettings;
+  ThemeSettings nextTheme = themeSettings;
+  uint8_t nextDisplayStyle = displayStyle;
+  uint8_t nextClockFace = clockFace;
+  uint8_t nextSparkRedrawSec = sparkRedrawSec;
+  uint8_t nextBrightness = brightness;
+  bool flag = false;
+
+#define READ_INT(section, key, minValue, maxValue, target, castType) \
+  do { \
+    if (!readBackupInteger(section, key, minValue, maxValue, integer, error, \
+                           #section "." key)) { \
+      sendJsonMessage(400, false, error.c_str()); \
+      return; \
+    } \
+    target = (castType)integer; \
+  } while (0)
+#define READ_BOOL(section, key, target) \
+  do { \
+    if (!readBackupBool(section, key, flag, error, #section "." key)) { \
+      sendJsonMessage(400, false, error.c_str()); \
+      return; \
+    } \
+    target = flag; \
+  } while (0)
+#define READ_COLOR(section, key, target) \
+  do { \
+    if (!readBackupColor(section, key, target, error, #section "." key)) { \
+      sendJsonMessage(400, false, error.c_str()); \
+      return; \
+    } \
+  } while (0)
+
+  READ_INT(display, "style", 0, STYLE_COUNT - 1, nextDisplayStyle, uint8_t);
+  READ_INT(display, "rotation", 0, 3, nextDisplay.rotation, uint8_t);
+  READ_INT(display, "brightness", 0, 255, nextBrightness, uint8_t);
+  READ_INT(display, "smoothing", 0, 3, nextDisplay.gaugeSmoothing, uint8_t);
+  READ_INT(display, "sparkSeconds", 1, 60, nextSparkRedrawSec, uint8_t);
+  READ_INT(display, "tempScale", 1, 500, nextDisplay.tempScaleMax, uint16_t);
+  READ_INT(display, "powerScale", 1, 65535, nextDisplay.powerScaleW, uint16_t);
+  READ_INT(display, "warnThreshold", 0, 100,
+           nextDisplay.warnThresholdPct, uint8_t);
+  READ_BOOL(display, "smallLabels", nextDisplay.smallLabels);
+  READ_BOOL(display, "invertColors", nextDisplay.invertColors);
+  READ_BOOL(display, "cydClassic", nextDisplay.cydPanelClassic);
+
+  READ_BOOL(backlight, "nightEnabled", nextBacklight.nightEnabled);
+  READ_INT(backlight, "nightBrightness", 0, 255,
+           nextBacklight.nightBrightness, uint8_t);
+  READ_INT(backlight, "nightStartMinute", 0, 1439,
+           nextBacklight.nightStartMinute, uint16_t);
+  READ_INT(backlight, "nightEndMinute", 0, 1439,
+           nextBacklight.nightEndMinute, uint16_t);
+  READ_INT(backlight, "offlineSleepMinutes", 0, 1440,
+           nextBacklight.offlineSleepMinutes, uint16_t);
+
+  READ_BOOL(touch, "enabled", nextTouch.enabled);
+  READ_INT(touch, "pin", 0, 48, nextTouch.pin, uint8_t);
+  READ_BOOL(touch, "activeHigh", nextTouch.activeHigh);
+  READ_INT(touch, "shortAction", 0, TOUCH_ACTION_COUNT - 1,
+           nextTouch.shortAction, uint8_t);
+  READ_INT(touch, "longAction", 0, TOUCH_ACTION_COUNT - 1,
+           nextTouch.longAction, uint8_t);
+  READ_INT(touch, "styleMask", 1, (1u << STYLE_COUNT) - 1u,
+           nextTouch.styleMask, uint8_t);
+  READ_BOOL(touch, "rememberStyle", nextTouch.rememberStyle);
+  if (nextTouch.enabled && (!touchInputSupported() || !touchPinAllowed(nextTouch.pin))) {
+    sendJsonMessage(400, false,
+                    "The restored touch GPIO is unsupported on this board.");
+    return;
+  }
+
+  READ_COLOR(colors, "bg", nextDisplay.bgColor);
+  READ_COLOR(colors, "track", nextDisplay.trackColor);
+  READ_COLOR(colors, "warn", nextDisplay.warnColor);
+  READ_COLOR(colors, "clock", nextDisplay.clockTimeColor);
+  READ_COLOR(colors, "date", nextDisplay.clockDateColor);
+  READ_COLOR(colors, "value", nextTheme.valueColor);
+  READ_COLOR(colors, "label", nextTheme.labelColor);
+  READ_COLOR(colors, "secondary", nextTheme.secondaryColor);
+  READ_COLOR(colors, "tile", nextTheme.tileColor);
+  READ_INT(colors, "labelMode", 0, THEME_LABEL_MODE_COUNT - 1,
+           nextTheme.labelMode, uint8_t);
+  READ_INT(colors, "tileTint", 0, 30, nextTheme.tileTintPct, uint8_t);
+
+  READ_INT(clock, "face", 0, CLOCK_FACE_COUNT - 1, nextClockFace, uint8_t);
+  READ_BOOL(clock, "use24h", nextNetwork.use24h);
+  READ_INT(clock, "dateFormat", 0, 5, nextNetwork.dateFormat, uint8_t);
+  READ_BOOL(clock, "hideDate", nextDisplay.hideClockDate);
+  const char* textValue = nullptr;
+  if (!readBackupString(clock, "timezone", sizeof(nextNetwork.timezoneStr) - 1,
+                        textValue, error, "clock.timezone")) {
+    sendJsonMessage(400, false, error.c_str());
+    return;
+  }
+  strlcpy(nextNetwork.timezoneStr, textValue, sizeof(nextNetwork.timezoneStr));
+
+  READ_BOOL(network, "mdns", nextNetwork.mdnsEnabled);
+  READ_BOOL(network, "showIp", nextNetwork.showIPAtStartup);
+  READ_BOOL(network, "dhcp", nextNetwork.useDHCP);
+  if (!readBackupString(network, "hostname", sizeof(nextNetwork.hostname) - 1,
+                        textValue, error, "network.hostname")) {
+    sendJsonMessage(400, false, error.c_str());
+    return;
+  }
+  sanitizeHostname(textValue, nextNetwork.hostname, sizeof(nextNetwork.hostname));
+
+  const char* networkKeys[] = { "staticIp", "gateway", "subnet", "dns" };
+  char* networkTargets[] = { nextNetwork.staticIP, nextNetwork.gateway,
+                             nextNetwork.subnet, nextNetwork.dns };
+  const size_t networkSizes[] = { sizeof(nextNetwork.staticIP), sizeof(nextNetwork.gateway),
+                                  sizeof(nextNetwork.subnet), sizeof(nextNetwork.dns) };
+  for (uint8_t i = 0; i < 4; i++) {
+    char path[28];
+    snprintf(path, sizeof(path), "network.%s", networkKeys[i]);
+    if (!readBackupString(network, networkKeys[i], networkSizes[i] - 1,
+                          textValue, error, path)) {
+      sendJsonMessage(400, false, error.c_str());
+      return;
+    }
+    const bool allowEmpty = nextNetwork.useDHCP || i == 3;
+    if (!validIp(String(textValue), allowEmpty)) {
+      sendJsonMessage(400, false,
+                      "The backup contains an invalid static IPv4 configuration.");
+      return;
+    }
+    strlcpy(networkTargets[i], textValue, networkSizes[i]);
+  }
+
+  uint8_t slotIndex = 0;
+  for (JsonObjectConst slot : gauges) {
+    char path[32];
+    snprintf(path, sizeof(path), "gauges[%u].metricId", slotIndex);
+    if (!readBackupInteger(slot, "metricId", 0, MAX_METRICS, integer, error, path)) {
+      sendJsonMessage(400, false, error.c_str());
+      return;
+    }
+    nextGaugeMap.slots[slotIndex].metricId = (uint8_t)integer;
+    snprintf(path, sizeof(path), "gauges[%u].type", slotIndex);
+    if (!readBackupInteger(slot, "type", 0, GAUGE_TYPE_COUNT - 1,
+                           integer, error, path)) {
+      sendJsonMessage(400, false, error.c_str());
+      return;
+    }
+    nextGaugeMap.slots[slotIndex].type = (uint8_t)integer;
+    snprintf(path, sizeof(path), "gauges[%u].scaleMax", slotIndex);
+    if (!readBackupInteger(slot, "scaleMax", 0, 65535, integer, error, path)) {
+      sendJsonMessage(400, false, error.c_str());
+      return;
+    }
+    nextGaugeMap.slots[slotIndex].scaleMax = (uint16_t)integer;
+    snprintf(path, sizeof(path), "gauges[%u].label", slotIndex);
+    if (!readBackupString(slot, "label", GAUGE_LABEL_LENGTH - 1,
+                          textValue, error, path)) {
+      sendJsonMessage(400, false, error.c_str());
+      return;
+    }
+    sanitizeGaugeLabel(textValue, nextGaugeLabels.labels[slotIndex],
+                       sizeof(nextGaugeLabels.labels[slotIndex]));
+    snprintf(path, sizeof(path), "gauges[%u].color", slotIndex);
+    if (!readBackupColor(slot, "color", nextGaugeMap.slots[slotIndex].arcColor,
+                         error, path)) {
+      sendJsonMessage(400, false, error.c_str());
+      return;
+    }
+    slotIndex++;
+  }
+
+#undef READ_INT
+#undef READ_BOOL
+#undef READ_COLOR
+
+  dispSettings = nextDisplay;
+  netSettings = nextNetwork;
+  gaugeMap = nextGaugeMap;
+  gaugeLabels = nextGaugeLabels;
+  backlightSettings = nextBacklight;
+  touchSettings = nextTouch;
+  themeSettings = nextTheme;
+  displayStyle = nextDisplayStyle;
+  clockFace = nextClockFace;
+  sparkRedrawSec = nextSparkRedrawSec;
+  brightness = nextBrightness;
+  saveSettings();
+
+  sendJsonMessage(200, true,
+                  "Configuration restored. WiFi credentials were preserved. Restarting.",
+                  true);
+  scheduleRestart(1800);
+}
+
+static void handleFactoryReset() {
+  if (server.arg("confirmation") != "RESET") {
+    sendJsonMessage(400, false, "Type RESET to confirm the factory reset.");
+    return;
+  }
+  if (!factoryResetSettings()) {
+    sendJsonMessage(500, false, "Could not erase the stored configuration.");
+    return;
+  }
+  sendJsonMessage(200, true,
+                  "Factory reset complete. Restarting in setup mode.", true);
+  scheduleRestart(1800, true);
 }
 
 static void handleSaveNetwork() {
@@ -760,6 +1195,9 @@ void initWebServer() {
   server.on("/save/clock", HTTP_POST, handleSaveClock);
   server.on("/save/network", HTTP_POST, handleSaveNetwork);
   server.on("/api/config", HTTP_GET, handleApiConfig);
+  server.on("/api/config/export", HTTP_GET, handleConfigExport);
+  server.on("/api/config/import", HTTP_POST, handleConfigImport);
+  server.on("/api/factory-reset", HTTP_POST, handleFactoryReset);
   server.on("/api/status", HTTP_GET, handleApiStatus);
   server.on("/screen.bmp", HTTP_GET, handleScreenshot);
   server.on("/ota/upload", HTTP_POST, handleOtaFinish, handleOtaUpload);
@@ -777,6 +1215,10 @@ void handleWebServer() {
   if (restartAt != 0 && millis() >= restartAt) {
     Serial.println("Rebooting...");
     Serial.flush();
+    if (eraseWifiAtRestart) {
+      WiFi.disconnect(true, true);
+      delay(50);
+    }
     ESP.restart();
   }
 }

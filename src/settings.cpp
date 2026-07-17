@@ -218,6 +218,13 @@ void saveSettings() {
   prefs.end();
 }
 
+bool factoryResetSettings() {
+  prefs.begin(NVS_NAMESPACE, false);
+  const bool cleared = prefs.clear();
+  prefs.end();
+  return cleared;
+}
+
 void saveDisplayStyle() {
   prefs.begin(NVS_NAMESPACE, false);
   prefs.putUChar("style", displayStyle);
