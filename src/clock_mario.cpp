@@ -11,6 +11,7 @@ constexpr int SPRITE_ROWS = 16;
 constexpr int UPDATE_MS = 35;
 constexpr int TRIGGER_SECOND = 56;
 constexpr int MAX_TARGETS = 4;
+constexpr int MARIO_DIRTY_SIZE = 64;
 constexpr unsigned long TIME_OVERRIDE_MAX_MS = 60000;
 
 constexpr uint16_t MARIO_RED = 0xF800;
@@ -28,6 +29,8 @@ constexpr uint16_t GROUND_LIGHT = 0xFDC0;
 constexpr uint16_t SCENE_GREEN = 0x07E0;
 constexpr uint16_t SCENE_DARK_GREEN = 0x0320;
 constexpr uint16_t SCENE_LIGHT_GREEN = 0x87F0;
+constexpr uint16_t SCENE_CLOUD = 0xFFFF;
+constexpr uint16_t SCENE_CLOUD_SHADE = 0xBDF7;
 constexpr uint16_t SCENE_BLOCK = 0xFBE0;
 constexpr uint16_t SCENE_BLOCK_DARK = 0x8200;
 constexpr uint16_t SCENE_BLOCK_LIGHT = 0xFFE0;
@@ -52,8 +55,22 @@ static const char MARIO_WALK_A[SPRITE_ROWS][SPRITE_COLS + 1] PROGMEM = {
 static const char MARIO_WALK_B[SPRITE_ROWS][SPRITE_COLS + 1] PROGMEM = {
   "000111110000", "001111111100", "002223330000", "022323333000",
   "022332333300", "002233330000", "000333300000", "001144110000",
-  "011144441000", "000144414330", "003444443330", "003446430000",
-  "002244220000", "022200002220", "002200022000", "000220220000"
+  "001144441100", "003144414300", "033444443330", "003446430000",
+  "002244220000", "002220022000", "000220022000", "002200000220"
+};
+
+static const char MARIO_WALK_C[SPRITE_ROWS][SPRITE_COLS + 1] PROGMEM = {
+  "000111110000", "001111111100", "002223330000", "022323333000",
+  "022332333300", "002233330000", "000333300000", "001144110000",
+  "000144441110", "000144414133", "003444443330", "003446430000",
+  "002244220000", "022200002220", "220000000220", "002200000022"
+};
+
+static const char MARIO_WALK_D[SPRITE_ROWS][SPRITE_COLS + 1] PROGMEM = {
+  "000111110000", "001111111100", "002223330000", "022323333000",
+  "022332333300", "002233330000", "000333300000", "001144110000",
+  "001144441100", "003144414300", "033444443330", "003446430000",
+  "002244220000", "002200022200", "002200022000", "000220220000"
 };
 
 static const char MARIO_JUMP[SPRITE_ROWS][SPRITE_COLS + 1] PROGMEM = {
@@ -219,8 +236,9 @@ uint16_t spriteColor(char index) {
   }
 }
 
-void drawMarioSprite(const char frame[SPRITE_ROWS][SPRITE_COLS + 1],
-                     int x, int y, int scale, bool faceRight) {
+void drawMarioSpriteOn(lgfx::LGFXBase& gfx,
+                       const char frame[SPRITE_ROWS][SPRITE_COLS + 1],
+                       int x, int y, int scale, bool faceRight) {
   for (int row = 0; row < SPRITE_ROWS; row++) {
     int col = 0;
     while (col < SPRITE_COLS) {
@@ -236,7 +254,7 @@ void drawMarioSprite(const char frame[SPRITE_ROWS][SPRITE_COLS + 1],
         if ((char)pgm_read_byte(&frame[row][nextSource]) == '0') break;
         run++;
       }
-      tft.fillRect(x + col * scale - 1, y + row * scale - 1,
+      gfx.fillRect(x + col * scale - 1, y + row * scale - 1,
                    run * scale + 2, scale + 2, SCENE_OUTLINE);
       col += run;
     }
@@ -256,108 +274,178 @@ void drawMarioSprite(const char frame[SPRITE_ROWS][SPRITE_COLS + 1],
         if ((char)pgm_read_byte(&frame[row][nextSource]) != color) break;
         run++;
       }
-      tft.fillRect(x + col * scale, y + row * scale,
+      gfx.fillRect(x + col * scale, y + row * scale,
                    run * scale, scale, spriteColor(color));
       col += run;
     }
   }
 }
 
-void drawPixelHill(int centerX, int groundY, int p, int rows, bool spots) {
+void drawMarioSprite(const char frame[SPRITE_ROWS][SPRITE_COLS + 1],
+                     int x, int y, int scale, bool faceRight) {
+  drawMarioSpriteOn(tft, frame, x, y, scale, faceRight);
+}
+
+void drawPixelHill(lgfx::LGFXBase& gfx, int centerX, int groundY,
+                   int p, int rows, bool spots) {
   for (int row = 0; row < rows; row++) {
-    const int width = (rows - row + 4) * 2 * p;
-    tft.fillRect(centerX - width / 2, groundY - (row + 1) * p,
+    const int levelsAbove = rows - row - 1;
+    const int width = (2 + levelsAbove * 5 / 2) * p;
+    gfx.fillRect(centerX - width / 2, groundY - (row + 1) * p,
                  width, p, SCENE_OUTLINE);
     if (width > 2 * p)
-      tft.fillRect(centerX - width / 2 + p, groundY - (row + 1) * p,
+      gfx.fillRect(centerX - width / 2 + p, groundY - (row + 1) * p,
                    width - 2 * p, p, SCENE_GREEN);
   }
   if (spots) {
-    tft.fillRect(centerX - 4 * p, groundY - 5 * p,
+    gfx.fillRect(centerX - 4 * p, groundY - 5 * p,
                  2 * p, 2 * p, SCENE_DARK_GREEN);
-    tft.fillRect(centerX + 3 * p, groundY - 8 * p,
+    gfx.fillRect(centerX + 3 * p, groundY - 8 * p,
                  p, 2 * p, SCENE_OUTLINE);
   }
 }
 
-void drawBrickBlock(int x, int y, int p) {
+void drawPixelCloud(lgfx::LGFXBase& gfx, int x, int y, int p) {
+  static const char cloud[6][13] PROGMEM = {
+    "000111000000",
+    "001222100000",
+    "011222111100",
+    "122222122210",
+    "122222222221",
+    "011333333110"
+  };
+
+  for (int row = 0; row < 6; row++) {
+    int col = 0;
+    while (col < 12) {
+      const char color = (char)pgm_read_byte(&cloud[row][col]);
+      if (color == '0') {
+        col++;
+        continue;
+      }
+      int run = 1;
+      while (col + run < 12 &&
+             (char)pgm_read_byte(&cloud[row][col + run]) == color)
+        run++;
+      const uint16_t rgb = color == '1' ? SCENE_OUTLINE :
+                           color == '2' ? SCENE_CLOUD : SCENE_CLOUD_SHADE;
+      gfx.fillRect(x + col * p, y + row * p, run * p, p, rgb);
+      col += run;
+    }
+  }
+}
+
+void drawCloudsOn(lgfx::LGFXBase& gfx, const MarioLayout& layout,
+                  int originX, int originY) {
+  const int p = scaled(2.0f, layout.unit);
+  const int cloudW = 12 * p;
+  const int edge = scaled(4.0f, layout.unit);
+  const int sideY = scaled(18.0f, layout.unit) - originY;
+  drawPixelCloud(gfx, edge - originX, sideY, p);
+  drawPixelCloud(gfx, layout.w - cloudW - edge - originX, sideY, p);
+  if (dispSettings.hideClockDate) {
+    drawPixelCloud(gfx, (layout.w - cloudW) / 2 - originX,
+                   scaled(4.0f, layout.unit) - originY, p);
+  }
+}
+
+void drawBrickBlock(lgfx::LGFXBase& gfx, int x, int y, int p) {
   const int size = 8 * p;
-  tft.fillRect(x, y, size, size, SCENE_BLOCK);
-  tft.drawRect(x, y, size, size, SCENE_OUTLINE);
-  tft.drawFastHLine(x + 1, y + 4 * p, size - 2, SCENE_BLOCK_DARK);
-  tft.drawFastVLine(x + 4 * p, y + 1, 4 * p - 1, SCENE_BLOCK_DARK);
-  tft.drawFastVLine(x + 2 * p, y + 4 * p, 4 * p - 1,
+  gfx.fillRect(x, y, size, size, SCENE_BLOCK);
+  gfx.drawRect(x, y, size, size, SCENE_OUTLINE);
+  gfx.drawFastHLine(x + 1, y + 4 * p, size - 2, SCENE_BLOCK_DARK);
+  gfx.drawFastVLine(x + 4 * p, y + 1, 4 * p - 1, SCENE_BLOCK_DARK);
+  gfx.drawFastVLine(x + 2 * p, y + 4 * p, 4 * p - 1,
                     SCENE_BLOCK_DARK);
-  tft.fillRect(x + p, y + p, p, p, SCENE_BLOCK_LIGHT);
+  gfx.fillRect(x + p, y + p, p, p, SCENE_BLOCK_LIGHT);
 }
 
-void drawQuestionBlock(int x, int y, int p) {
+void drawQuestionBlock(lgfx::LGFXBase& gfx, int x, int y, int p) {
   const int size = 8 * p;
-  tft.fillRect(x, y, size, size, SCENE_BLOCK_LIGHT);
-  tft.drawRect(x, y, size, size, SCENE_OUTLINE);
-  tft.fillRect(x + p, y + p, p, p, MARIO_WHITE);
-  tft.fillRect(x + 3 * p, y + 2 * p, 3 * p, p, SCENE_BLOCK_DARK);
-  tft.fillRect(x + 5 * p, y + 3 * p, p, 2 * p, SCENE_BLOCK_DARK);
-  tft.fillRect(x + 4 * p, y + 4 * p, p, 2 * p, SCENE_BLOCK_DARK);
-  tft.fillRect(x + 4 * p, y + 6 * p, p, p, SCENE_BLOCK_DARK);
+  gfx.fillRect(x, y, size, size, SCENE_BLOCK_LIGHT);
+  gfx.drawRect(x, y, size, size, SCENE_OUTLINE);
+  gfx.fillRect(x + p, y + p, p, p, MARIO_WHITE);
+  gfx.fillRect(x + 3 * p, y + 2 * p, 3 * p, p, SCENE_BLOCK_DARK);
+  gfx.fillRect(x + 5 * p, y + 3 * p, p, 2 * p, SCENE_BLOCK_DARK);
+  gfx.fillRect(x + 4 * p, y + 4 * p, p, 2 * p, SCENE_BLOCK_DARK);
+  gfx.fillRect(x + 4 * p, y + 6 * p, p, p, SCENE_BLOCK_DARK);
 }
 
-void drawPixelPipe(int x, int groundY, int p) {
+void drawPixelPipe(lgfx::LGFXBase& gfx, int x, int groundY, int p) {
   const int bodyY = groundY - 22 * p;
-  tft.fillRect(x, bodyY + 4 * p, 8 * p, 18 * p, SCENE_OUTLINE);
-  tft.fillRect(x + p, bodyY + 5 * p, 6 * p, 17 * p, SCENE_GREEN);
-  tft.fillRect(x + 2 * p, bodyY + 5 * p, p, 17 * p, SCENE_LIGHT_GREEN);
-  tft.fillRect(x - p, bodyY, 10 * p, 5 * p, SCENE_OUTLINE);
-  tft.fillRect(x, bodyY + p, 8 * p, 3 * p, SCENE_GREEN);
-  tft.fillRect(x + p, bodyY + p, p, 2 * p, SCENE_LIGHT_GREEN);
+  gfx.fillRect(x, bodyY + 4 * p, 8 * p, 18 * p, SCENE_OUTLINE);
+  gfx.fillRect(x + p, bodyY + 5 * p, 6 * p, 17 * p, SCENE_GREEN);
+  gfx.fillRect(x + 2 * p, bodyY + 5 * p, p, 17 * p, SCENE_LIGHT_GREEN);
+  gfx.fillRect(x - p, bodyY, 10 * p, 5 * p, SCENE_OUTLINE);
+  gfx.fillRect(x, bodyY + p, 8 * p, 3 * p, SCENE_GREEN);
+  gfx.fillRect(x + p, bodyY + p, p, 2 * p, SCENE_LIGHT_GREEN);
   for (int y = bodyY + 6 * p; y < groundY; y += 2 * p)
-    tft.fillRect(x + 6 * p, y, p, p, SCENE_DARK_GREEN);
+    gfx.fillRect(x + 6 * p, y, p, p, SCENE_DARK_GREEN);
 }
 
-void drawBackgroundScenery(const MarioLayout& layout) {
+void drawBackgroundSceneryOn(lgfx::LGFXBase& gfx, const MarioLayout& layout,
+                             int originX, int originY) {
   const int p = scaled(2.0f, layout.unit);
   const int blockSize = 8 * p;
   const int groupW = 5 * blockSize;
-  const int blockX = layout.w - groupW - scaled(12.0f, layout.unit);
-  const int blockY = layout.groundY - scaled(50.0f, layout.unit);
+  const int blockX = layout.w - groupW - scaled(12.0f, layout.unit) - originX;
+  const int blockY = layout.groundY - scaled(50.0f, layout.unit) - originY;
+  const int groundY = layout.groundY - originY;
 
-  drawPixelHill(scaled(26.0f, layout.unit), layout.groundY, p, 13, true);
-  drawPixelPipe(scaled(72.0f, layout.unit), layout.groundY, p);
-  drawPixelHill(layout.w - scaled(82.0f, layout.unit),
-                layout.groundY, p, 7, false);
-  drawBrickBlock(blockX, blockY, p);
-  drawBrickBlock(blockX + blockSize, blockY, p);
-  drawQuestionBlock(blockX + 2 * blockSize, blockY, p);
-  drawBrickBlock(blockX + 3 * blockSize, blockY, p);
-  drawBrickBlock(blockX + 4 * blockSize, blockY, p);
+  drawCloudsOn(gfx, layout, originX, originY);
+  drawPixelHill(gfx, scaled(26.0f, layout.unit) - originX,
+                groundY, p, 13, true);
+  drawPixelPipe(gfx, scaled(72.0f, layout.unit) - originX, groundY, p);
+  drawPixelHill(gfx, layout.w - scaled(82.0f, layout.unit) - originX,
+                groundY, p, 7, false);
+  drawBrickBlock(gfx, blockX, blockY, p);
+  drawBrickBlock(gfx, blockX + blockSize, blockY, p);
+  drawQuestionBlock(gfx, blockX + 2 * blockSize, blockY, p);
+  drawBrickBlock(gfx, blockX + 3 * blockSize, blockY, p);
+  drawBrickBlock(gfx, blockX + 4 * blockSize, blockY, p);
 }
 
-void drawGround(const MarioLayout& layout) {
+void drawBackgroundScenery(const MarioLayout& layout) {
+  drawBackgroundSceneryOn(tft, layout, 0, 0);
+}
+
+void drawGroundOn(lgfx::LGFXBase& gfx, const MarioLayout& layout,
+                  int originX, int originY) {
   const int tile = scaled(12.0f, layout.unit);
-  tft.fillRect(0, layout.groundY, layout.w, layout.h - layout.groundY, GROUND_FILL);
-  tft.drawFastHLine(0, layout.groundY, layout.w, GROUND_TOP);
+  gfx.fillRect(-originX, layout.groundY - originY,
+               layout.w, layout.h - layout.groundY, GROUND_FILL);
+  gfx.drawFastHLine(-originX, layout.groundY - originY,
+                    layout.w, GROUND_TOP);
   for (int y = layout.groundY + tile; y < layout.h; y += tile) {
-    tft.drawFastHLine(0, y, layout.w, GROUND_LINE);
+    gfx.drawFastHLine(-originX, y - originY, layout.w, GROUND_LINE);
     if (y + 1 < layout.h)
-      tft.drawFastHLine(0, y + 1, layout.w, GROUND_LIGHT);
+      gfx.drawFastHLine(-originX, y + 1 - originY, layout.w, GROUND_LIGHT);
   }
   int row = 0;
   for (int y = layout.groundY; y < layout.h; y += tile, row++) {
     const int offset = (row & 1) ? tile / 2 : 0;
     for (int x = offset; x < layout.w; x += tile) {
-      tft.drawFastVLine(x, y, min(tile, layout.h - y), GROUND_LINE);
+      gfx.drawFastVLine(x - originX, y - originY,
+                       min(tile, layout.h - y), GROUND_LINE);
       const int highlightW = min(tile - 4, layout.w - x - 2);
       if (highlightW > 0 && y + 2 < layout.h)
-        tft.drawFastHLine(x + 2, y + 2, highlightW, GROUND_LIGHT);
+        gfx.drawFastHLine(x + 2 - originX, y + 2 - originY,
+                         highlightW, GROUND_LIGHT);
     }
   }
 }
 
+void drawGround(const MarioLayout& layout) {
+  drawGroundOn(tft, layout, 0, 0);
+}
+
 void drawHeader(const MarioLayout& layout, const struct tm& now, bool clear) {
   const int headerH = scaled(20.0f, layout.unit);
-  if (clear)
+  if (clear) {
     tft.fillRect(0, max(0, layout.dateY - 2), layout.w, headerH + 4,
                  SCENE_SKY);
+    drawCloudsOn(tft, layout, 0, 0);
+  }
   setFont(tft, FONT_BODY);
   tft.setTextSize(layout.unit >= 1.75f ? 2.0f : 1.0f);
   tft.setTextColor(dispSettings.clockDateColor, SCENE_SKY);
@@ -376,7 +464,7 @@ void drawHeader(const MarioLayout& layout, const struct tm& now, bool clear) {
 }
 
 void drawDigits(const MarioLayout& layout, const char digits[5], bool colonOn,
-                const int16_t offsets[5], bool clear) {
+                 const int16_t offsets[5], bool clear) {
   const int bouncePad = scaled(14.0f, layout.unit);
   setFont(tft, FONT_7SEG);
   tft.setTextSize(layout.textScale);
@@ -466,6 +554,14 @@ uint8_t digitMaskForRect(const MarioLayout& layout, int x, int y, int w, int h) 
   return mask;
 }
 
+int coinWide(const MarioLayout& layout) {
+  return scaled(12.0f, layout.unit);
+}
+
+int coinHeight(const MarioLayout& layout) {
+  return scaled(16.0f, layout.unit);
+}
+
 uint8_t erasePreviousDynamic(const MarioLayout& layout) {
   uint8_t restoreMask = 0;
   if (previousMarioX > -900) {
@@ -476,8 +572,8 @@ uint8_t erasePreviousDynamic(const MarioLayout& layout) {
                           layout.spriteW + 2, layout.spriteH + 2);
   }
   if (previousCoinX > -900) {
-    const int coinW = scaled(8.0f, layout.unit);
-    const int coinH = scaled(12.0f, layout.unit);
+    const int coinW = coinWide(layout);
+    const int coinH = coinHeight(layout);
     restoreMask |= digitMaskForRect(
       layout, previousCoinX - 1, previousCoinY - 1, coinW + 2, coinH + 2);
     restoreBackgroundRect(layout, previousCoinX - 1, previousCoinY - 1,
@@ -488,26 +584,45 @@ uint8_t erasePreviousDynamic(const MarioLayout& layout) {
   return restoreMask;
 }
 
+uint8_t erasePreviousCoin(const MarioLayout& layout) {
+  if (previousCoinX <= -900) return 0;
+  const int coinW = coinWide(layout);
+  const int coinH = coinHeight(layout);
+  const uint8_t restoreMask = digitMaskForRect(
+    layout, previousCoinX - 1, previousCoinY - 1, coinW + 2, coinH + 2);
+  restoreBackgroundRect(layout, previousCoinX - 1, previousCoinY - 1,
+                        coinW + 2, coinH + 2);
+  previousCoinX = previousCoinY = -1000;
+  return restoreMask;
+}
+
+void paintCoinOn(lgfx::LGFXBase& gfx, const MarioLayout& layout,
+                 int originX, int originY) {
+  if (!coin.active) return;
+  const int wide = coinWide(layout);
+  const int narrow = scaled(4.0f, layout.unit);
+  const int height = coinHeight(layout);
+  const int width = ((coin.frame / 3) & 1) ? narrow : wide;
+  const int x = coin.x + (wide - width) / 2 - originX;
+  const int y = coin.y - originY;
+  gfx.fillRoundRect(x, y, width, height, max(1, width / 2), MARIO_GOLD);
+  if (width > narrow)
+    gfx.drawFastVLine(x + width / 2, y + 2,
+                      max(1, height - 4), MARIO_WHITE);
+}
+
 void drawCoin(const MarioLayout& layout) {
   if (!coin.active) return;
-  const int wide = scaled(8.0f, layout.unit);
-  const int narrow = scaled(3.0f, layout.unit);
-  const int height = scaled(12.0f, layout.unit);
-  const int width = ((coin.frame / 3) & 1) ? narrow : wide;
-  const int x = coin.x + (wide - width) / 2;
-  tft.fillRoundRect(x, coin.y, width, height, max(1, width / 2), MARIO_GOLD);
-  if (width > narrow)
-    tft.drawFastVLine(x + width / 2, coin.y + 2,
-                      max(1, height - 4), MARIO_WHITE);
+  paintCoinOn(tft, layout, 0, 0);
   previousCoinX = coin.x;
   previousCoinY = coin.y;
 }
 
 void spawnCoin(const MarioLayout& layout, int index) {
   coin.active = true;
-  coin.x = digitX(layout, index) + layout.digitW / 2 - scaled(4.0f, layout.unit);
+  coin.x = digitX(layout, index) + layout.digitW / 2 - coinWide(layout) / 2;
   coin.y = layout.timeY + scaled(4.0f, layout.unit);
-  coin.velocity = -scaled(5.0f, layout.unit);
+  coin.velocity = -scaled(8.0f, layout.unit);
   coin.frame = 0;
 }
 
@@ -576,7 +691,7 @@ void advanceAnimation(const MarioLayout& layout) {
       } else {
         facingRight = delta > 0;
         marioX += facingRight ? walkStep : -walkStep;
-        walkFrame = (walkFrame + 1) % 6;
+        walkFrame = (walkFrame + 1) % 8;
       }
       break;
     }
@@ -612,7 +727,7 @@ void advanceAnimation(const MarioLayout& layout) {
     }
     case MARIO_EXITING:
       marioX += walkStep;
-      walkFrame = (walkFrame + 1) % 6;
+      walkFrame = (walkFrame + 1) % 8;
       if (marioX > layout.w + layout.spriteW) state = MARIO_IDLE;
       break;
     default:
@@ -620,12 +735,88 @@ void advanceAnimation(const MarioLayout& layout) {
   }
 }
 
+const char (*activeMarioFrame())[SPRITE_COLS + 1] {
+  const char (*frame)[SPRITE_COLS + 1] = MARIO_STAND;
+  if (state == MARIO_JUMPING) frame = MARIO_JUMP;
+  else {
+    switch ((walkFrame / 2) & 3) {
+      case 0: frame = MARIO_WALK_A; break;
+      case 1: frame = MARIO_WALK_B; break;
+      case 2: frame = MARIO_WALK_C; break;
+      default: frame = MARIO_WALK_D; break;
+    }
+  }
+  return frame;
+}
+
+void paintDigitsOn(lgfx::LGFXBase& gfx, const MarioLayout& layout,
+                   int originX, int originY, bool colonOn) {
+  gfx.setTextFont(7);
+  gfx.setTextSize(layout.textScale);
+  gfx.setTextColor(dispSettings.clockTimeColor, SCENE_SKY);
+  gfx.setTextDatum(TL_DATUM);
+  for (int i = 0; i < 5; i++) {
+    if (displayedDigits[i] == ' ' || (i == 2 && !colonOn)) continue;
+    gfx.drawChar(displayedDigits[i], digitX(layout, i) - originX,
+                 layout.timeY + digitOffset[i] - originY, 7);
+  }
+}
+
+bool composeMarioTransition(const MarioLayout& layout,
+                            int oldX, int oldY, bool newVisible,
+                            int newX, int newY,
+                            const char newFrame[SPRITE_ROWS][SPRITE_COLS + 1],
+                            bool colonOn) {
+  const bool oldVisible = oldX > -900;
+  if (!oldVisible && !newVisible) return true;
+
+  int left = layout.w;
+  int top = layout.h;
+  int right = 0;
+  int bottom = 0;
+  auto includeSprite = [&](int x, int y) {
+    left = min(left, x - 1);
+    top = min(top, y - 1);
+    right = max(right, x + layout.spriteW + 1);
+    bottom = max(bottom, y + layout.spriteH + 1);
+  };
+  if (oldVisible) includeSprite(oldX, oldY);
+  if (newVisible) includeSprite(newX, newY);
+
+  if (right <= 0 || bottom <= 0 || left >= layout.w || top >= layout.h)
+    return true;
+  left = max(0, left);
+  top = max(0, top);
+  right = min((int)layout.w, right);
+  bottom = min((int)layout.h, bottom);
+  if (right - left > MARIO_DIRTY_SIZE || bottom - top > MARIO_DIRTY_SIZE)
+    return false;
+
+  static lgfx::LGFX_Sprite dirtySprite;
+  static bool spriteReady = false;
+  if (!spriteReady) {
+    dirtySprite.setColorDepth(16);
+    spriteReady = dirtySprite.createSprite(MARIO_DIRTY_SIZE, MARIO_DIRTY_SIZE);
+    if (!spriteReady) return false;
+  }
+
+  dirtySprite.fillSprite(SCENE_SKY);
+  drawBackgroundSceneryOn(dirtySprite, layout, left, top);
+  drawGroundOn(dirtySprite, layout, left, top);
+  paintDigitsOn(dirtySprite, layout, left, top, colonOn);
+  paintCoinOn(dirtySprite, layout, left, top);
+  if (newVisible)
+    drawMarioSpriteOn(dirtySprite, newFrame, newX - left, newY - top,
+                      layout.spriteScale, facingRight);
+  dirtySprite.pushSprite(tft_ptr, left, top);
+  tft.waitDMA();
+  return true;
+}
+
 void drawAnimatedMario(const MarioLayout& layout) {
   if (state == MARIO_IDLE) return;
   const int y = layout.groundY - layout.spriteH + jumpOffset;
-  const char (*frame)[SPRITE_COLS + 1] = MARIO_STAND;
-  if (state == MARIO_JUMPING) frame = MARIO_JUMP;
-  else frame = walkFrame < 3 ? MARIO_WALK_A : MARIO_WALK_B;
+  const char (*frame)[SPRITE_COLS + 1] = activeMarioFrame();
   drawMarioSprite(frame, marioX, y, layout.spriteScale, facingRight);
   previousMarioX = marioX;
   previousMarioY = y;
@@ -756,11 +947,39 @@ void tickMarioClock() {
   }
 
   if (state != MARIO_IDLE || coin.active) {
-    const uint8_t restoreMask = erasePreviousDynamic(layout);
+    const int oldMarioX = previousMarioX;
+    const int oldMarioY = previousMarioY;
+    const uint8_t restoreMask = erasePreviousCoin(layout);
     advanceAnimation(layout);
     drawDirtyDigits(layout, displayedDigits, colonOn, digitOffset, restoreMask);
     drawCoin(layout);
-    drawAnimatedMario(layout);
+    const bool newMarioVisible = state != MARIO_IDLE;
+    const int newMarioY = layout.groundY - layout.spriteH + jumpOffset;
+    const char (*newFrame)[SPRITE_COLS + 1] = activeMarioFrame();
+    if (composeMarioTransition(layout, oldMarioX, oldMarioY,
+                               newMarioVisible, marioX, newMarioY,
+                               newFrame, colonOn)) {
+      if (newMarioVisible) {
+        previousMarioX = marioX;
+        previousMarioY = newMarioY;
+      } else {
+        previousMarioX = previousMarioY = -1000;
+      }
+    } else {
+      uint8_t marioMask = 0;
+      if (oldMarioX > -900) {
+        marioMask = digitMaskForRect(
+          layout, oldMarioX - 1, oldMarioY - 1,
+          layout.spriteW + 2, layout.spriteH + 2);
+        restoreBackgroundRect(layout, oldMarioX - 1, oldMarioY - 1,
+                              layout.spriteW + 2, layout.spriteH + 2);
+      }
+      drawDirtyDigits(layout, displayedDigits, colonOn, digitOffset, marioMask);
+      drawCoin(layout);
+      drawAnimatedMario(layout);
+      if (!newMarioVisible)
+        previousMarioX = previousMarioY = -1000;
+    }
     changed = true;
   } else if (colonOn != previousColon) {
     drawColon(layout, colonOn);
