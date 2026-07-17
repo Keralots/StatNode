@@ -17,6 +17,7 @@
 #include "layout.h"
 #include "wifi_manager.h"
 #include <WiFi.h>
+#include <math.h>
 
 static ScreenState currentScreen = SCREEN_SPLASH;
 static bool forceRedraw = true;
@@ -133,52 +134,42 @@ static uint16_t themedTileColor(uint16_t accent) {
   return blend565(alpha, accent, themeSettings.tileColor);
 }
 
-static void drawSlotGauge(const GaugeSlot& slot, const PcMetric& m,
-                          const char* label,
-                          int16_t cx, int16_t cy, int16_t r, bool fr) {
-  uint8_t type = slot.type;
-  if (type == GAUGE_TYPE_AUTO || type >= GAUGE_TYPE_COUNT) type = classifyByUnit(m.unit);
+struct MetricText {
+  char value[12];
+  char unit[8];
+};
 
-  // Theme colors are resolved here so every gauge primitive receives a complete
-  // palette. Warning thresholds can still override the value and arc locally.
-  GaugeColors gc = {
-    slot.arcColor,
-    themedLabelColor(slot.arcColor, dispSettings.bgColor, slot.arcColor),
-    themeSettings.valueColor
-  };
+// One formatter feeds every monitor face so switching layouts never changes
+// the meaning or precision of a reading. Large base-unit values use familiar
+// compact forms while the companion protocol remains untouched.
+static void formatMetricText(const PcMetric& metric, float raw, MetricText& out) {
+  if (!isfinite(raw)) {
+    strlcpy(out.value, "--", sizeof(out.value));
+    out.unit[0] = '\0';
+    return;
+  }
 
-  switch (type) {
-    case GAUGE_TYPE_POWER: {
-      float scale = slot.scaleMax ? (float)slot.scaleMax : (float)dispSettings.powerScaleW;
-      const uint16_t powerArc = themeSettings.labelMode == THEME_LABEL_CLASSIC
-        ? (uint16_t)CLR_GOLD : slot.arcColor;
-      GaugeColors powerColors = {
-        powerArc,
-        themedLabelColor(slot.arcColor, dispSettings.bgColor, CLR_GOLD),
-        themeSettings.valueColor
-      };
-      drawPowerGauge(tft, cx, cy, r, m.value, true, label, fr, scale,
-                     &powerColors);
-      break;
-    }
-    case GAUGE_TYPE_PERCENT: {
-      uint8_t pct = (uint8_t)(m.value < 0 ? 0 : (m.value > 100 ? 100 : m.value));
-      drawFanGauge(tft, cx, cy, r, pct, slot.arcColor, label, fr, &gc);
-      break;
-    }
-    case GAUGE_TYPE_FAN: {
-      // Generic scaled value (RPM and friends): the temp gauge shows the raw
-      // reading in the center while the arc fills 0..scale.
-      float scale = slot.scaleMax ? (float)slot.scaleMax : (float)GAUGE_FAN_SCALE_DEFAULT;
-      drawTempGauge(tft, cx, cy, r, m.value, 0, scale, slot.arcColor, label, nullptr, fr, &gc);
-      break;
-    }
-    case GAUGE_TYPE_TEMP:
-    default: {
-      float scale = slot.scaleMax ? (float)slot.scaleMax : (float)dispSettings.tempScaleMax;
-      drawTempGauge(tft, cx, cy, r, m.value, 0, scale, slot.arcColor, label, nullptr, fr, &gc);
-      break;
-    }
+  const float magnitude = fabsf(raw);
+  strlcpy(out.unit, metric.unit, sizeof(out.unit));
+  if (strcmp(metric.unit, "RPM") == 0 && magnitude >= 1000.0f) {
+    snprintf(out.value, sizeof(out.value), "%.1fk", raw / 1000.0f);
+  } else if (strcmp(metric.unit, "MHz") == 0 && magnitude >= 1000.0f) {
+    snprintf(out.value, sizeof(out.value), "%.1f", raw / 1000.0f);
+    strlcpy(out.unit, "GHz", sizeof(out.unit));
+  } else if (strcmp(metric.unit, "MB") == 0 && magnitude >= 1024.0f) {
+    snprintf(out.value, sizeof(out.value), "%.1f", raw / 1024.0f);
+    strlcpy(out.unit, "GB", sizeof(out.unit));
+  } else if (strcmp(metric.unit, "KB") == 0 && magnitude >= 1024.0f) {
+    snprintf(out.value, sizeof(out.value), "%.1f", raw / 1024.0f);
+    strlcpy(out.unit, "MB", sizeof(out.unit));
+  } else if (strcmp(metric.unit, "W") == 0 && magnitude >= 1000.0f) {
+    snprintf(out.value, sizeof(out.value), "%.1f", raw / 1000.0f);
+    strlcpy(out.unit, "kW", sizeof(out.unit));
+  } else if (strcmp(metric.unit, "V") == 0 || strcmp(metric.unit, "A") == 0 ||
+             strcmp(metric.unit, "GHz") == 0 || strcmp(metric.unit, "GB") == 0) {
+    snprintf(out.value, sizeof(out.value), "%.1f", raw);
+  } else {
+    snprintf(out.value, sizeof(out.value), "%.0f", raw);
   }
 }
 
@@ -374,7 +365,12 @@ static bool slotWarn(uint8_t slotIdx, float value, float scale) {
 // Fonts are sized against this probe instead of the live value, so a reading
 // gaining or losing a digit between packets never makes the text jump sizes.
 static void slotProbe(const GaugeSlot& s, const PcMetric& m, char* buf, size_t len) {
-  snprintf(buf, len, "%.0f", slotScaleMax(s, m));
+  MetricText scaleText, liveText;
+  formatMetricText(m, slotScaleMax(s, m), scaleText);
+  formatMetricText(m, m.value, liveText);
+  const char* widest = strlen(liveText.value) > strlen(scaleText.value)
+    ? liveText.value : scaleText.value;
+  strlcpy(buf, widest, len);
 }
 
 // Pick the widest font (from base downwards) whose rendering of s fits maxW.
@@ -644,10 +640,10 @@ static void drawBigNumbersScreen(bool fr) {
     const float frac = slotFraction(m.value, scale);
     const bool warn = slotWarn(vis[i].slotIdx, m.value, scale);
 
-    char val[12];
-    snprintf(val, sizeof(val), "%.0f", m.value);
+    MetricText text;
+    formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", val, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
     if (!gaugeTextChanged(x + cellW / 2, y + cellH / 2, key, label, fr)) continue;
 
     // No cell clear: every element overwrites itself opaquely, so only the
@@ -663,7 +659,7 @@ static void drawBigNumbersScreen(bool fr) {
     // Value (bottom-left, above the meter) + dim unit after it. The value
     // scales up in tall cells, so fewer bound metrics = bigger digits.
     setFont(tft, FONT_SMALL);
-    const int16_t unitW = tft.textWidth(m.unit);
+    const int16_t unitW = tft.textWidth(text.unit);
     const int16_t baseY = y + cellH - (roomy ? 20 : 12);
     const int16_t bandH = cellH - (roomy ? 44 : 30);
     const int16_t availW = cellW - 2 * padX - unitW - 5;
@@ -673,7 +669,8 @@ static void drawBigNumbersScreen(bool fr) {
     scaleValueToCell(probe, availW, bandH);
     static int16_t prevVw[NUM_GAUGE_SLOTS];
     if (fr && !gCaptureRender) prevVw[vis[i].slotIdx] = -1;
-    drawValueRegionL(x + padX, baseY, cellW - 2 * padX, bandH, val, m.unit,
+    drawValueRegionL(x + padX, baseY, cellW - 2 * padX, bandH,
+                     text.value, text.unit,
                      warn ? dispSettings.warnColor : themeSettings.valueColor, bg,
                      gCaptureRender ? nullptr : &prevVw[vis[i].slotIdx]);
 
@@ -750,10 +747,10 @@ static void drawTilesScreen(bool fr) {
     const uint16_t cardBg = themedTileColor(lineColor);
     const uint16_t labelColor = themedLabelColor(lineColor, cardBg, CLR_TEXT_DIM);
 
-    char val[12];
-    snprintf(val, sizeof(val), "%.0f", m.value);
+    MetricText text;
+    formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", val, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
     const bool head = gaugeTextChanged(x + cardW / 2, y, key, label, fr);
 
     // Card background only when something actually blanked the area - a
@@ -778,13 +775,13 @@ static void drawTilesScreen(bool fr) {
         const int16_t headCy = headH / 2 + 1;
         setFont(headSpr, FONT_SMALL);
         const int16_t labelW = headSpr.textWidth(label);
-        const int16_t unitW  = headSpr.textWidth(m.unit);
+        const int16_t unitW  = headSpr.textWidth(text.unit);
         headSpr.setTextDatum(ML_DATUM);
         headSpr.setTextColor(labelColor, cardBg);
         headSpr.drawString(label, 9, headCy);
         headSpr.setTextDatum(MR_DATUM);
         headSpr.setTextColor(themeSettings.secondaryColor, cardBg);
-        headSpr.drawString(m.unit, cardW - 9, headCy);
+        headSpr.drawString(text.unit, cardW - 9, headCy);
 
         char probe[12];
         slotProbe(s, m, probe, sizeof(probe));
@@ -801,7 +798,7 @@ static void drawTilesScreen(bool fr) {
         headSpr.setTextDatum(MR_DATUM);
         headSpr.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor,
                              cardBg);
-        headSpr.drawString(val, cardW - 9 - unitW - 4, headCy);
+        headSpr.drawString(text.value, cardW - 9 - unitW - 4, headCy);
 
         headSpr.pushSprite(tft_ptr, x, y);
         tft.waitDMA();      // same DMA barrier as the spark sprite
@@ -811,19 +808,19 @@ static void drawTilesScreen(bool fr) {
         const int16_t headCy = y + headH / 2 + 1;
         setFont(tft, FONT_SMALL);
         const int16_t labelW = tft.textWidth(label);
-        const int16_t unitW  = tft.textWidth(m.unit);
+        const int16_t unitW  = tft.textWidth(text.unit);
         tft.setTextDatum(ML_DATUM);
         tft.setTextColor(labelColor, cardBg);
         tft.drawString(label, x + 9, headCy);
         tft.setTextDatum(MR_DATUM);
         tft.setTextColor(themeSettings.secondaryColor, cardBg);
-        tft.drawString(m.unit, x + cardW - 9, headCy);
+        tft.drawString(text.unit, x + cardW - 9, headCy);
         char probe[12];
         slotProbe(s, m, probe, sizeof(probe));
         fitFontForWidth(probe, cardW - 30 - labelW - unitW,
-                        (headH >= 34) ? FONT_LARGE : FONT_BODY);
+                         (headH >= 34) ? FONT_LARGE : FONT_BODY);
         drawValueRegionR(x + 9 + labelW + 6, x + cardW - 9 - unitW - 4, headCy,
-                         headH - 4, val,
+                         headH - 4, text.value,
                          warn ? dispSettings.warnColor : themeSettings.valueColor,
                          cardBg);
       }
@@ -887,10 +884,10 @@ static void drawHeroScreen(bool fr) {
 
   RendererWrite rw(tft);
 
-  char val[12];
-  snprintf(val, sizeof(val), "%.0f", hm.value);
+  MetricText heroText;
+  formatMetricText(hm, hm.value, heroText);
   char key[16];
-  snprintf(key, sizeof(key), "%s%s", val, heroWarn ? "!" : "");
+  snprintf(key, sizeof(key), "%s%s", heroText.value, heroWarn ? "!" : "");
   // Anchor off-grid (3, heroH) so it can never collide with a row anchor.
   if (gaugeTextChanged(3, heroH, key, heroLabel, fr)) {
     const int16_t heroW = (n >= 2) ? (w / 2) : w;
@@ -903,7 +900,7 @@ static void drawHeroScreen(bool fr) {
     tft.fillRect(12 + lw, 8, heroW - 24 - lw, 14, bg);
 
     setFont(tft, FONT_SMALL);
-    const int16_t unitW = tft.textWidth(hm.unit);
+    const int16_t unitW = tft.textWidth(heroText.unit);
     const int16_t baseY = heroH - 12;
     const int16_t bandH = heroH - 36;
     const int16_t availW = heroW - 24 - unitW - 6;
@@ -913,7 +910,8 @@ static void drawHeroScreen(bool fr) {
     scaleValueToCell(probe, availW, bandH);
     static int16_t heroPrevVw = -1;
     if (fr && !gCaptureRender) heroPrevVw = -1;
-    drawValueRegionL(12, baseY, heroW - 24, bandH, val, hm.unit,
+    drawValueRegionL(12, baseY, heroW - 24, bandH,
+                     heroText.value, heroText.unit,
                      heroWarn ? dispSettings.warnColor : themeSettings.valueColor, bg,
                      gCaptureRender ? nullptr : &heroPrevVw);
   }
@@ -959,10 +957,10 @@ static void drawHeroScreen(bool fr) {
     const int16_t rowY = rowsY0 + (i - 1) * rowH;
     const int16_t cy = rowY + rowH / 2;
 
-    char rv[12];
-    snprintf(rv, sizeof(rv), "%.0f", m.value);
+    MetricText rowText;
+    formatMetricText(m, m.value, rowText);
     char rkey[16];
-    snprintf(rkey, sizeof(rkey), "%s%s", rv, warn ? "!" : "");
+    snprintf(rkey, sizeof(rkey), "%s%s", rowText.value, warn ? "!" : "");
     if (!gaugeTextChanged(w / 2, cy, rkey, label, fr)) continue;
 
     fitFontForWidth(label, bx - 16, rowLabelFont);
@@ -974,45 +972,17 @@ static void drawHeroScreen(bool fr) {
                  warn ? dispSettings.warnColor : s.arcColor);
 
     char vb[20];
-    snprintf(vb, sizeof(vb), "%.0f %s", m.value, m.unit);
+    snprintf(vb, sizeof(vb), "%s %s", rowText.value, rowText.unit);
+    MetricText probeText;
+    formatMetricText(m, scale, probeText);
     char valueProbe[20];
-    snprintf(valueProbe, sizeof(valueProbe), "%.0f %s", scale, m.unit);
+    snprintf(valueProbe, sizeof(valueProbe), "%s %s",
+             probeText.value, probeText.unit);
     fitFontForWidth(valueProbe, rowValueW,
                     (rowH >= 34) ? FONT_LARGE : FONT_BODY);
     drawValueRegionR(valueLeft, valueRight, cy, rowH - 2, vb,
                      warn ? dispSettings.warnColor : themeSettings.valueColor, bg);
   }
-}
-
-static void drawMonitorScreen(bool fr) {
-  const int16_t w = (int16_t)tft.width();
-  const int16_t h = (int16_t)tft.height();
-
-  const int16_t gridH = h;
-
-  const int16_t cols = 3;
-  const int16_t rows = (NUM_GAUGE_SLOTS + cols - 1) / cols;
-  const int16_t cellW = w / cols;
-  const int16_t cellH = gridH / rows;
-
-  int16_t r = ((cellW < cellH ? cellW : cellH) / 2) - 8;
-  if (r < 12) r = 12;
-  if (r > 70) r = 70;   // cap so the value font stays readable on big panels
-
-  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    int16_t cx = (i % cols) * cellW + cellW / 2;
-    int16_t cy = (i / cols) * cellH + cellH / 2;
-
-    const GaugeSlot& slot = gaugeMap.slots[i];
-    const PcMetric* m = (slot.metricId != 0) ? pcMetricFindById(slot.metricId) : nullptr;
-    if (m) {
-      drawSlotGauge(slot, *m, gaugeDisplayLabel(i, m->name), cx, cy, r, fr);
-    } else if (fr) {
-      // Empty/unbound slot: clear it on a full redraw.
-      tft.fillCircle(cx, cy, r + 2, dispSettings.bgColor);
-    }
-  }
-
 }
 
 // Status badge - the LHM trouble indicator now that the bottom bar is gone.
@@ -1053,9 +1023,9 @@ static void drawMonitorStyled(bool fr) {
   }
   switch (displayStyle) {
     case STYLE_BIG_NUMBERS: drawBigNumbersScreen(fr); break;
-    case STYLE_TILES:       drawTilesScreen(fr);      break;
     case STYLE_HERO:        drawHeroScreen(fr);       break;
-    default:                drawMonitorScreen(fr);    break;
+    case STYLE_TILES:
+    default:                drawTilesScreen(fr);      break;
   }
   drawStatusBadge((int16_t)tft.width());
   if (!gCaptureRender) gScreenCleared = false;

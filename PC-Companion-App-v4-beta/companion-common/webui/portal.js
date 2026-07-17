@@ -1,7 +1,7 @@
 'use strict';
 
 var app = {info:null,sensors:[],selectedKeys:[],live:{},dirty:false,device:null,maxMetrics:20};
-var styleNames = ['Rings','Big numbers','Tiles + sparklines','Hero + list'];
+var styleNames = ['','Big numbers','Tiles + sparklines','Hero + list'];
 var toastTimer = 0;
 var aliasTimer = 0;
 

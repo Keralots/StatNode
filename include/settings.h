@@ -63,12 +63,21 @@ struct BacklightSettings {
 // DisplaySettings blob, so adding it never resizes "disp" (a size mismatch
 // there would reset every display setting on OTA).
 enum DisplayStyle : uint8_t {
-  STYLE_RINGS       = 0,  // classic arc gauge grid (default)
+  STYLE_RETIRED     = 0,  // legacy persisted value, migrated to Tiles
   STYLE_BIG_NUMBERS = 1,  // large values + hairline meter, no chrome
   STYLE_TILES       = 2,  // cards with value + sparkline history
   STYLE_HERO        = 3,  // slot 1 large with sparkline + compact rows
   STYLE_COUNT
 };
+
+constexpr uint8_t STYLE_DEFAULT = STYLE_TILES;
+constexpr uint8_t STYLE_ACTIVE_MASK =
+  (1u << STYLE_BIG_NUMBERS) | (1u << STYLE_TILES) | (1u << STYLE_HERO);
+
+inline uint8_t normalizeDisplayStyle(uint8_t style) {
+  return (style >= STYLE_BIG_NUMBERS && style < STYLE_COUNT)
+    ? style : STYLE_DEFAULT;
+}
 
 // Idle clock face. Stored as its own NVS scalar ("clockface") so extending
 // the list cannot resize the legacy DisplaySettings blob and reset unrelated

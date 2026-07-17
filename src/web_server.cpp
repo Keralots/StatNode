@@ -119,6 +119,12 @@ static long clampedArg(const char* name, long current, long minValue, long maxVa
   return value;
 }
 
+static uint8_t displayStyleArg(const char* name, uint8_t current) {
+  const uint8_t requested =
+    (uint8_t)clampedArg(name, current, STYLE_RETIRED, STYLE_COUNT - 1);
+  return normalizeDisplayStyle(requested);
+}
+
 static void addHtmlColor(JsonObject object, const char* key, uint16_t color) {
   char buf[8];
   rgb565ToHtml(color, buf);
@@ -361,7 +367,7 @@ static void handleSaveDisplay() {
       (uint8_t)clampedArg("touchLong", nextTouch.longAction, 0, TOUCH_ACTION_COUNT - 1);
     nextTouch.rememberStyle = server.hasArg("touchRemember") ? 1 : 0;
     nextTouch.styleMask = 0;
-    for (uint8_t i = 0; i < STYLE_COUNT; i++) {
+    for (uint8_t i = STYLE_BIG_NUMBERS; i < STYLE_COUNT; i++) {
       char key[16];
       snprintf(key, sizeof(key), "touchStyle%u", i);
       if (server.hasArg(key)) nextTouch.styleMask |= 1u << i;
@@ -376,7 +382,7 @@ static void handleSaveDisplay() {
     }
   }
 
-  displayStyle = (uint8_t)clampedArg("style", displayStyle, 0, STYLE_COUNT - 1);
+  displayStyle = displayStyleArg("style", displayStyle);
   dispSettings.rotation = (uint8_t)clampedArg("rotation", dispSettings.rotation, 0, 3);
   brightness = (uint8_t)clampedArg("brightness", brightness, 0, 255);
   dispSettings.gaugeSmoothing = (uint8_t)clampedArg("smoothing", dispSettings.gaugeSmoothing, 0, 3);
@@ -419,7 +425,7 @@ static void handleSaveGauges() {
   // Keep style and chart cadence accepted here for backwards compatibility
   // with existing scripts that posted them to /save/gauges.
   if (server.hasArg("style"))
-    displayStyle = (uint8_t)clampedArg("style", displayStyle, 0, STYLE_COUNT - 1);
+    displayStyle = displayStyleArg("style", displayStyle);
   if (server.hasArg("sparks"))
     sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
 
@@ -488,7 +494,7 @@ static const ColorPreset kPresets[] = {
 
 static void handleSaveColors() {
   if (server.hasArg("style"))
-    displayStyle = (uint8_t)clampedArg("style", displayStyle, 0, STYLE_COUNT - 1);
+    displayStyle = displayStyleArg("style", displayStyle);
   const String pre = server.arg("preset");
   const ColorPreset* preset = nullptr;
   for (const ColorPreset& cp : kPresets) {
@@ -714,6 +720,7 @@ static void handleConfigImport() {
   } while (0)
 
   READ_INT(display, "style", 0, STYLE_COUNT - 1, nextDisplayStyle, uint8_t);
+  nextDisplayStyle = normalizeDisplayStyle(nextDisplayStyle);
   READ_INT(display, "rotation", 0, 3, nextDisplay.rotation, uint8_t);
   READ_INT(display, "brightness", 0, 255, nextBrightness, uint8_t);
   READ_INT(display, "smoothing", 0, 3, nextDisplay.gaugeSmoothing, uint8_t);
@@ -745,6 +752,9 @@ static void handleConfigImport() {
            nextTouch.longAction, uint8_t);
   READ_INT(touch, "styleMask", 1, (1u << STYLE_COUNT) - 1u,
            nextTouch.styleMask, uint8_t);
+  nextTouch.styleMask &= STYLE_ACTIVE_MASK;
+  if (nextTouch.styleMask == 0)
+    nextTouch.styleMask = 1u << STYLE_DEFAULT;
   READ_BOOL(touch, "rememberStyle", nextTouch.rememberStyle);
   if (nextTouch.enabled && (!touchInputSupported() || !touchPinAllowed(nextTouch.pin))) {
     sendJsonMessage(400, false,

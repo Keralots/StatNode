@@ -13,7 +13,7 @@ GaugeLabels gaugeLabels;
 BacklightSettings backlightSettings;
 TouchSettings touchSettings;
 ThemeSettings themeSettings;
-uint8_t displayStyle = STYLE_RINGS;
+uint8_t displayStyle = STYLE_DEFAULT;
 uint8_t clockFace = CLOCK_FACE_STANDARD;
 uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
@@ -83,7 +83,7 @@ void defaultTouchSettings(TouchSettings& ts) {
   ts.activeHigh = 1;
   ts.shortAction = TOUCH_ACTION_NEXT_STYLE;
   ts.longAction = TOUCH_ACTION_TOGGLE_POWER;
-  ts.styleMask = (1u << STYLE_COUNT) - 1u;
+  ts.styleMask = STYLE_ACTIVE_MASK;
   ts.rememberStyle = 0;
 }
 
@@ -158,8 +158,9 @@ void loadSettings() {
   prefs.getString("ssid", wifiSSID, sizeof(wifiSSID));
   prefs.getString("pass", wifiPass, sizeof(wifiPass));
   brightness = prefs.getUChar("bright", 200);
-  displayStyle = prefs.getUChar("style", STYLE_RINGS);
-  if (displayStyle >= STYLE_COUNT) displayStyle = STYLE_RINGS;
+  const uint8_t storedDisplayStyle = prefs.getUChar("style", STYLE_DEFAULT);
+  displayStyle = normalizeDisplayStyle(storedDisplayStyle);
+  const bool migrateDisplayStyle = displayStyle != storedDisplayStyle;
   clockFace = prefs.getUChar(
     "clockface", dispSettings.pongClock ? CLOCK_FACE_BREAKOUT : CLOCK_FACE_STANDARD);
   if (clockFace >= CLOCK_FACE_COUNT) clockFace = CLOCK_FACE_STANDARD;
@@ -181,9 +182,12 @@ void loadSettings() {
     touchSettings.shortAction = TOUCH_ACTION_NEXT_STYLE;
   if (touchSettings.longAction >= TOUCH_ACTION_COUNT)
     touchSettings.longAction = TOUCH_ACTION_TOGGLE_POWER;
-  touchSettings.styleMask &= (1u << STYLE_COUNT) - 1u;
+  const uint8_t storedTouchStyleMask = touchSettings.styleMask;
+  touchSettings.styleMask &= STYLE_ACTIVE_MASK;
   if (touchSettings.styleMask == 0)
-    touchSettings.styleMask = (1u << STYLE_COUNT) - 1u;
+    touchSettings.styleMask = 1u << STYLE_DEFAULT;
+  const bool migrateTouchStyleMask =
+    touchSettings.styleMask != storedTouchStyleMask;
   if (themeSettings.labelMode >= THEME_LABEL_MODE_COUNT)
     themeSettings.labelMode = THEME_LABEL_CLASSIC;
   if (themeSettings.tileTintPct > 30) themeSettings.tileTintPct = 30;
@@ -195,12 +199,24 @@ void loadSettings() {
   }
 
   prefs.end();
+
+  if (migrateDisplayStyle || migrateTouchStyleMask) {
+    prefs.begin(NVS_NAMESPACE, false);
+    if (migrateDisplayStyle) prefs.putUChar("style", displayStyle);
+    if (migrateTouchStyleMask)
+      prefs.putBytes("touch", &touchSettings, sizeof(TouchSettings));
+    prefs.end();
+  }
 }
 
 void saveSettings() {
   // Keep the old field coherent for downgrade compatibility. Mario maps to
   // Standard on firmware versions that predate the dedicated scalar.
   dispSettings.pongClock = clockFace == CLOCK_FACE_BREAKOUT;
+  displayStyle = normalizeDisplayStyle(displayStyle);
+  touchSettings.styleMask &= STYLE_ACTIVE_MASK;
+  if (touchSettings.styleMask == 0)
+    touchSettings.styleMask = 1u << STYLE_DEFAULT;
   prefs.begin(NVS_NAMESPACE, false);  // read-write
   prefs.putBytes("disp", &dispSettings, sizeof(DisplaySettings));
   prefs.putBytes("net", &netSettings, sizeof(NetworkSettings));
@@ -226,6 +242,7 @@ bool factoryResetSettings() {
 }
 
 void saveDisplayStyle() {
+  displayStyle = normalizeDisplayStyle(displayStyle);
   prefs.begin(NVS_NAMESPACE, false);
   prefs.putUChar("style", displayStyle);
   prefs.end();
