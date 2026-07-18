@@ -7,6 +7,10 @@ config portal, and animated idle clocks.
 
 Firmware only talks UDP to the companion. No cloud, no accounts.
 
+StatNode is the color evolution of
+[SmallOLED-PCMonitor](https://github.com/Keralots/SmallOLED-PCMonitor), the
+author's 128x64 OLED monitor, which is still actively developed.
+
 ## Monitor faces
 
 Six layouts, all driven by the same six ordered metric slots (slot 1 = hero).
@@ -68,7 +72,7 @@ the companion reads sensors directly and does not need LHM.
 ## Companion app
 
 Source and a prebuilt Windows build live in this repo under
-[`PC-Companion-App-v4-beta/`](PC-Companion-App-v4-beta/).
+[`StatNode-CompanionApp/`](StatNode-CompanionApp/).
 
 - **Windows:** run `win-companion/dist/StatNodeCompanion.exe`, or from
   source `python win-companion/statnode_companion.py` (deps in
@@ -78,7 +82,7 @@ Source and a prebuilt Windows build live in this repo under
 
 It opens a local UI at `http://127.0.0.1:8740` where you pick the target device,
 choose which sensors to stream, and set the send interval. See the
-[companion README](PC-Companion-App-v4-beta/README.md) for details.
+[companion README](StatNode-CompanionApp/README.md) for details.
 
 ## Supported hardware
 
@@ -152,4 +156,3 @@ curl -F "firmware=@.pio/build/esp32c3/firmware.bin" http://<device-ip>/ota/uploa
 Built on [LovyanGFX](https://github.com/lovyan03/LovyanGFX),
 [ArduinoJson](https://github.com/bblanchon/ArduinoJson), and
 [Improv WiFi](https://www.improv-wifi.com/) (vendored under `lib/ImprovWiFi`).
-The color UI chassis is derived from the author's earlier BambuHelper project.
