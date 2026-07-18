@@ -1,21 +1,21 @@
-# PCMonitorColor Companion for Linux
+# StatNode Companion for Linux
 
-The Linux companion shares the PCMonitorColor web UI and UDP sender with the
+The Linux companion shares the StatNode web UI and UDP sender with the
 Windows edition while using the Linux sensor backend.
 
 ## Run
 
 ```sh
 python3 -m pip install -r requirements.txt
-python3 pc_stats_monitor_v4_linux.py
+python3 statnode_companion_linux.py
 ```
 
 Useful options:
 
 ```sh
-python3 pc_stats_monitor_v4_linux.py --minimized
-python3 pc_stats_monitor_v4_linux.py --autostart enable
-python3 pc_stats_monitor_v4_linux.py --autostart disable
+python3 statnode_companion_linux.py --minimized
+python3 statnode_companion_linux.py --autostart enable
+python3 statnode_companion_linux.py --autostart disable
 ```
 
 When a native webview backend is unavailable, the interface opens in the
@@ -29,11 +29,11 @@ for the machine.
 
 ## Configuration
 
-Files are stored below `~/.config/PCMonitorColor/`, or below
-`$XDG_CONFIG_HOME/PCMonitorColor/` when that environment variable is set. The
+Files are stored below `~/.config/StatNode/`, or below
+`$XDG_CONFIG_HOME/StatNode/` when that environment variable is set. The
 main file is `companion_config.json`.
 
-Autostart uses the user service `pcmonitorcolor-companion.service`.
+Autostart uses the user service `statnode-companion.service`.
 
 The companion controls the sensor stream. Screen layout, per-slot labels,
 styles, colors, brightness, clock, network, and firmware remain in the device

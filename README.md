@@ -1,4 +1,4 @@
-# PCMonitorColor
+# StatNode
 
 Live PC sensor monitor for small ESP32 color displays. A companion app on your
 PC streams sensor readings (CPU, GPU, RAM, temps, fans, power, ...) over the
@@ -26,7 +26,7 @@ When the PC goes offline the screen shows an idle clock: **Standard**,
 
 ## Web portal
 
-Browse to the device IP or `http://pcmonitor.local`. Everything is applied live
+Browse to the device IP or `http://statnode.local`. Everything is applied live
 without a reboot (except network changes).
 
 | Overview | Metrics & layout | Colors |
@@ -44,7 +44,7 @@ night schedule, touch), **Metrics & layout** (drag metrics into slots),
 PC companion app  --UDP :4210 JSON-->  ESP32  -->  240x240 panel + web portal
 ```
 
-The companion (PCMonitorColor Companion) discovers PC sensors, lets you pick
+The companion (StatNode Companion) discovers PC sensors, lets you pick
 which to send, and pushes a JSON packet each second. The device binds each
 metric by id to a display slot. If packets stop, it flips to the idle clock.
 
@@ -70,10 +70,10 @@ the companion reads sensors directly and does not need LHM.
 Source and a prebuilt Windows build live in this repo under
 [`PC-Companion-App-v4-beta/`](PC-Companion-App-v4-beta/).
 
-- **Windows:** run `win-companion/dist/PCMonitorColorCompanion.exe`, or from
-  source `python win-companion/pc_stats_monitor_v4.py` (deps in
+- **Windows:** run `win-companion/dist/StatNodeCompanion.exe`, or from
+  source `python win-companion/statnode_companion.py` (deps in
   `win-companion/requirements.txt`).
-- **Linux:** `python linux-companion/pc_stats_monitor_v4_linux.py` (deps in
+- **Linux:** `python linux-companion/statnode_companion_linux.py` (deps in
   `linux-companion/requirements.txt`).
 
 It opens a local UI at `http://127.0.0.1:8740` where you pick the target device,
@@ -129,10 +129,10 @@ curl -F "firmware=@.pio/build/esp32c3/firmware.bin" http://<device-ip>/ota/uploa
 ## First-run setup
 
 1. Flash the firmware and power the device.
-2. On first boot it opens a WiFi AP **`PCMonitor-XXXX`** (password `pcmon1234`).
+2. On first boot it opens a WiFi AP **`StatNode-XXXX`** (password `statnode1234`).
    Connect and the captive portal opens at `http://192.168.4.1`; enter your WiFi.
    (Improv-over-USB-serial also works in the first 3 minutes.)
-3. After it joins your network, open the device IP / `pcmonitor.local`, bind
+3. After it joins your network, open the device IP / `statnode.local`, bind
    your metrics on **Metrics & layout**, and start the [companion](#companion-app).
 
 ## Troubleshooting
@@ -141,7 +141,7 @@ curl -F "firmware=@.pio/build/esp32c3/firmware.bin" http://<device-ip>/ota/uploa
   packets. Check the companion is running and pointed at the device IP, that LHM
   is running (Windows), and that the PC and device share the same subnet with
   UDP `4210` open.
-- **`pcmonitor.local` does not resolve:** use the device IP directly (shown on
+- **`statnode.local` does not resolve:** use the device IP directly (shown on
   the device at boot). mDNS must be enabled (default on) and is flaky on some
   networks.
 - **Colors look off in a `/screen.bmp` capture:** expected. The capture is

@@ -1,4 +1,4 @@
-// Renderer: screen-state machine + per-frame drawing for PCMonitorColor.
+// Renderer: screen-state machine + per-frame drawing for StatNode.
 // Replaces BambuHelper's printer-centric display_ui rendering. Screens:
 //   SPLASH/AP/CONNECTING/CONNECTED - status text
 //   MONITOR  - gauge grid driven by pcData (auto-mapped for now; configurable

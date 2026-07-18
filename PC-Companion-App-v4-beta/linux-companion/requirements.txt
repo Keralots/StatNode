@@ -1,4 +1,4 @@
-# Runtime dependencies for pc_stats_monitor_v4_linux.py (Linux)
+# Runtime dependencies for statnode_companion_linux.py (Linux)
 #
 #   python3 -m pip install -r requirements.txt
 #

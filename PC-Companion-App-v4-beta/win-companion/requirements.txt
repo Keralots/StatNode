@@ -1,4 +1,4 @@
-# Runtime dependencies for pc_stats_monitor_v4.py (Windows)
+# Runtime dependencies for statnode_companion.py (Windows)
 #
 #   python -m pip install -r requirements.txt
 #

@@ -1,4 +1,4 @@
-// PCMonitorColor web portal, JSON APIs, live screen capture, OTA update, and
+// StatNode web portal, JSON APIs, live screen capture, OTA update, and
 // captive-portal redirects. Static UI assets are streamed from PROGMEM in
 // bounded chunks so low-RAM boards never assemble the full page in heap.
 #include "web_server.h"
@@ -261,7 +261,10 @@ static void handleApiConfig() {
 //  shared between devices without exposing the network password, and restore
 //  never disconnects a device by replacing its SSID without a matching key.
 // ---------------------------------------------------------------------------
-static const char* CONFIG_BACKUP_FORMAT = "pcmonitorcolor-config";
+static const char* CONFIG_BACKUP_FORMAT = "statnode-config";
+// Backups exported by pre-rename (PCMonitorColor) firmware remain importable.
+static const char* CONFIG_BACKUP_FORMAT_LEGACY = "pcmonitorcolor-config";
+static const char* CONFIG_BACKUP_PRODUCT_LEGACY = "PCMonitorColor";
 static const uint8_t CONFIG_BACKUP_SCHEMA = 1;
 static const size_t CONFIG_IMPORT_MAX_BYTES = 16 * 1024;
 
@@ -350,7 +353,7 @@ static void handleConfigExport() {
   serializeJson(doc, out);
   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
   server.sendHeader("Content-Disposition",
-                    "attachment; filename=pcmonitorcolor-config.json");
+                    "attachment; filename=statnode-config.json");
   server.send(200, "application/json", out);
 }
 
@@ -629,7 +632,7 @@ static bool readBackupColor(JsonObjectConst object, const char* key,
 static void handleConfigImport() {
   const String& body = server.arg("plain");
   if (body.length() == 0) {
-    sendJsonMessage(400, false, "Choose a PCMonitorColor backup file.");
+    sendJsonMessage(400, false, "Choose a StatNode backup file.");
     return;
   }
   if (body.length() > CONFIG_IMPORT_MAX_BYTES) {
@@ -652,13 +655,15 @@ static void handleConfigImport() {
   const char* format = nullptr;
   String error;
   if (!readBackupString(root, "format", 40, format, error, "format") ||
-      strcmp(format, CONFIG_BACKUP_FORMAT) != 0) {
-    sendJsonMessage(400, false, "This is not a PCMonitorColor configuration backup.");
+      (strcmp(format, CONFIG_BACKUP_FORMAT) != 0 &&
+       strcmp(format, CONFIG_BACKUP_FORMAT_LEGACY) != 0)) {
+    sendJsonMessage(400, false, "This is not a StatNode configuration backup.");
     return;
   }
   const char* product = nullptr;
   if (!readBackupString(root, "product", 40, product, error, "product") ||
-      strcmp(product, PRODUCT_NAME) != 0) {
+      (strcmp(product, PRODUCT_NAME) != 0 &&
+       strcmp(product, CONFIG_BACKUP_PRODUCT_LEGACY) != 0)) {
     sendJsonMessage(400, false, "This backup belongs to a different product.");
     return;
   }

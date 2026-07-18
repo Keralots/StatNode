@@ -1,4 +1,4 @@
-"""Local HTTP server for the PCMonitorColor desktop companion."""
+"""Local HTTP server for the StatNode desktop companion."""
 
 import copy
 import json
@@ -119,7 +119,7 @@ def _device_url(address, path):
 def _fetch_device(address, path, timeout=2.0):
     req = urllib_request.Request(
         _device_url(address, path),
-        headers={"User-Agent": "PCMonitorColor-Companion/%s" % CONFIG_VERSION},
+        headers={"User-Agent": "StatNode-Companion/%s" % CONFIG_VERSION},
     )
     with _DIRECT_HTTP.open(req, timeout=timeout) as response:
         return response.read(), response.headers.get("Content-Type", "application/octet-stream")
@@ -137,14 +137,14 @@ def device_status(state, address=None, timeout=2.0):
         address = _device_address(address)
         data = _fetch_device_json(address, timeout=timeout)
         product = data.get("product", "")
-        compatible = product == "PCMonitorColor"
+        compatible = product == "StatNode"
         state.set_reachable(True)
         result = dict(data)
         result.update({
             "reachable": True,
             "compatible": compatible,
             "address": address,
-            "message": ("PCMonitorColor is online." if compatible else
+            "message": ("StatNode is online." if compatible else
                         "A web device responded, but it reports product '%s'." % (product or "unknown")),
         })
         return result
@@ -154,7 +154,7 @@ def device_status(state, address=None, timeout=2.0):
             "reachable": False,
             "compatible": False,
             "address": address or "",
-            "message": "Could not read PCMonitorColor status: %s" % exc,
+            "message": "Could not read StatNode status: %s" % exc,
         }
 
 

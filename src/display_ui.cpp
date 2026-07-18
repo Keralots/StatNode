@@ -1,4 +1,4 @@
-// Slim display layer for PCMonitorColor: panel bring-up, backlight, and the
+// Slim display layer for StatNode: panel bring-up, backlight, and the
 // JC3248W535 PSRAM-sprite flush path. All the BambuHelper printer/AMS rendering
 // is gone - the gauge grid is drawn by the renderer (see renderer.cpp / main).
 #include "display_ui.h"
@@ -244,7 +244,7 @@ void initDisplay() {
     tft.drawString(PRODUCT_NAME, sw / 2, sh / 2 - 20);
     setFont(tft, FONT_BODY);
     tft.setTextColor(CLR_TEXT_DIM, CLR_BG);
-    tft.drawString("PC Monitor", sw / 2, sh / 2 + 10);
+    tft.drawString("StatNode", sw / 2, sh / 2 + 10);
     setFont(tft, FONT_SMALL);
     tft.drawString(FW_VERSION, sw / 2, sh / 2 + 30);
   }

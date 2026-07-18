@@ -14,8 +14,8 @@ async function api(url,options){var response=await fetch(url,options);var data=a
 function formBody(form){return new URLSearchParams(new FormData(form))}
 function setDirty(on){app.dirty=!!on;var meta=$('saveMeta');meta.classList.toggle('clean',!app.dirty);meta.querySelector('.txt').textContent=app.dirty?'Unsaved sensor changes':'All sensor changes saved'}
 
-function setMode(mode){document.documentElement.dataset.mode=mode;localStorage.setItem('pcmc_mode',mode);qa('[data-mode]').forEach(function(button){button.classList.toggle('on',button.dataset.mode===mode)})}
-function setAccent(accent){document.documentElement.dataset.accent=accent;localStorage.setItem('pcmc_accent',accent);qa('[data-acc]').forEach(function(button){button.classList.toggle('on',button.dataset.acc===accent)})}
+function setMode(mode){document.documentElement.dataset.mode=mode;localStorage.setItem('sn_mode',mode);qa('[data-mode]').forEach(function(button){button.classList.toggle('on',button.dataset.mode===mode)})}
+function setAccent(accent){document.documentElement.dataset.accent=accent;localStorage.setItem('sn_accent',accent);qa('[data-acc]').forEach(function(button){button.classList.toggle('on',button.dataset.acc===accent)})}
 qa('[data-mode]').forEach(function(button){button.addEventListener('click',function(){setMode(button.dataset.mode)})});
 qa('[data-acc]').forEach(function(button){button.addEventListener('click',function(){setAccent(button.dataset.acc)})});
 setMode(document.documentElement.dataset.mode||'dark');setAccent(document.documentElement.dataset.accent||'green');
@@ -63,8 +63,8 @@ $('revertBtn').addEventListener('click',async function(){try{await api('/api/rev
 async function loadAutostart(){try{var data=await api('/api/autostart');$('autostartChk').checked=!!data.enabled;setText('autostartState',data.enabled?'enabled':'disabled')}catch(error){setText('autostartState','unavailable')}}
 $('autostartChk').addEventListener('change',async function(){try{var body=new URLSearchParams({enable:this.checked?'1':'0'});var data=await api('/api/autostart',{method:'POST',body:body});this.checked=!!data.enabled;setText('autostartState',data.enabled?'enabled':'disabled')}catch(error){showToast(error.message,true);await loadAutostart()}});
 
-function downloadJson(data){var blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});var url=URL.createObjectURL(blob);var link=document.createElement('a');link.href=url;link.download='pcmonitorcolor-companion.json';link.click();setTimeout(function(){URL.revokeObjectURL(url)},1000)}
-$('exportBtn').addEventListener('click',async function(){try{var data=await api('/api/export');var text=JSON.stringify(data,null,2);if(window.pywebview&&window.pywebview.api&&window.pywebview.api.save_text){await window.pywebview.api.save_text(text,'pcmonitorcolor-companion.json')}else{downloadJson(data)}}catch(error){showToast(error.message,true)}});
+function downloadJson(data){var blob=new Blob([JSON.stringify(data,null,2)],{type:'application/json'});var url=URL.createObjectURL(blob);var link=document.createElement('a');link.href=url;link.download='statnode-companion.json';link.click();setTimeout(function(){URL.revokeObjectURL(url)},1000)}
+$('exportBtn').addEventListener('click',async function(){try{var data=await api('/api/export');var text=JSON.stringify(data,null,2);if(window.pywebview&&window.pywebview.api&&window.pywebview.api.save_text){await window.pywebview.api.save_text(text,'statnode-companion.json')}else{downloadJson(data)}}catch(error){showToast(error.message,true)}});
 async function importText(text){var parsed=JSON.parse(text);var data=await api('/api/import',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(parsed)});await Promise.all([loadInfo(),loadSensors(false)]);setDirty(false);showToast(data.message||'Configuration imported.')}
 $('importBtn').addEventListener('click',async function(){try{if(window.pywebview&&window.pywebview.api&&window.pywebview.api.open_text){var result=await window.pywebview.api.open_text();if(result&&result.ok)await importText(result.text)}else{$('importFile').click()}}catch(error){showToast(error.message,true)}});
 $('importFile').addEventListener('change',async function(){if(!this.files.length)return;try{await importText(await this.files[0].text())}catch(error){showToast(error.message,true)}this.value=''});

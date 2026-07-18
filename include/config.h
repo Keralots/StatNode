@@ -5,7 +5,7 @@
 //  Firmware version
 // =============================================================================
 #define FW_VERSION          "1.0.0"
-#define PRODUCT_NAME        "PCMonitorColor"
+#define PRODUCT_NAME        "StatNode"
 
 // Board variant - injected into the web UI for OTA asset filtering.
 // Normally set via build_flags in platformio.ini; this is a fallback.
@@ -62,8 +62,8 @@
 // =============================================================================
 //  WiFi
 // =============================================================================
-#define WIFI_AP_PREFIX      "PCMonitor-"
-#define WIFI_AP_PASSWORD    "pcmon1234"
+#define WIFI_AP_PREFIX      "StatNode-"
+#define WIFI_AP_PASSWORD    "statnode1234"
 #define WIFI_CONNECT_TIMEOUT 15000  // 15s STA connect timeout
 #define WIFI_RECONNECT_TIMEOUT 60000 // 60s before re-entering AP mode
 #define WIFI_BACKOFF_PHASE1_MS    10000   // 10s between attempts in phase 1

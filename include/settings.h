@@ -178,7 +178,7 @@ struct NetworkSettings {
   bool use24h;            // true = 24h format (default), false = 12h AM/PM
   uint8_t dateFormat;     // 0=DD.MM.YYYY .. (see formatter)
   bool mdnsEnabled;       // advertise <hostname>.local over mDNS
-  char hostname[32];      // mDNS/host label, sanitized [a-z0-9-], default "pcmonitor"
+  char hostname[32];      // mDNS/host label, sanitized [a-z0-9-], default "statnode"
 };
 
 extern char wifiSSID[33];
@@ -217,7 +217,7 @@ uint16_t htmlToRgb565(const char* hex);
 void rgb565ToHtml(uint16_t color, char* buf);  // buf must be >= 8 chars
 
 // Normalize a string into a valid mDNS/DNS label: lowercase, keep only
-// [a-z0-9-], strip leading/trailing hyphens. Falls back to "pcmonitor".
+// [a-z0-9-], strip leading/trailing hyphens. Falls back to "statnode".
 void sanitizeHostname(const char* in, char* out, size_t outSize);
 
 #endif // SETTINGS_H

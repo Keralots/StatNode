@@ -1,6 +1,6 @@
-# PCMonitorColor Companion for Windows
+# StatNode Companion for Windows
 
-The Windows companion selects PC sensors, sends them to PCMonitorColor over
+The Windows companion selects PC sensors, sends them to StatNode over
 UDP, and remains available from the system tray. Its configuration window uses
 WebView2 through pywebview.
 
@@ -10,15 +10,15 @@ Python 3.10 or newer is recommended.
 
 ```bat
 python -m pip install -r requirements.txt
-python pc_stats_monitor_v4.py
+python statnode_companion.py
 ```
 
 Useful options:
 
 ```bat
-python pc_stats_monitor_v4.py --minimized
-python pc_stats_monitor_v4.py --autostart enable
-python pc_stats_monitor_v4.py --autostart disable
+python statnode_companion.py --minimized
+python statnode_companion.py --autostart enable
+python statnode_companion.py --autostart disable
 ```
 
 When pywebview is unavailable, the companion opens its local interface in the
@@ -38,16 +38,16 @@ The Auto source mode prefers the REST API and falls back to WMI.
 
 ## Configuration and logs
 
-The packaged application stores its files in `%APPDATA%\PCMonitorColor\`:
+The packaged application stores its files in `%APPDATA%\StatNode\`:
 
 - `companion_config.json`
 - `companion.log`
 
-Source mode stores these files next to `pc_stats_monitor_v4.py`. This path is
+Source mode stores these files next to `statnode_companion.py`. This path is
 separate from the SmallOLED companion, so both applications can coexist.
 
 Autostart uses the per-user registry value
-`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\PCMonitorColorCompanion`.
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Run\StatNodeCompanion`.
 It does not require administrator rights.
 
 ## Build the executable
@@ -57,7 +57,7 @@ python -m pip install pyinstaller
 build_exe.bat
 ```
 
-The output is `dist\PCMonitorColorCompanion.exe`. WebView2 is included with
+The output is `dist\StatNodeCompanion.exe`. WebView2 is included with
 Windows 11 and can be installed separately on Windows 10.
 
 ## Configuration ownership

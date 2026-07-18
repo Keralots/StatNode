@@ -1,14 +1,14 @@
-# PCMonitorColor Companion 4.1
+# StatNode Companion 4.1
 
 The desktop companion discovers PC hardware sensors and sends selected values to
-PCMonitorColor over UDP. Its web-style interface runs in a native window and
+StatNode over UDP. Its web-style interface runs in a native window and
 stays available from the system tray.
 
 ## Responsibilities
 
 - The companion owns device targeting, sensor discovery, sensor selection,
   optional stream aliases, update frequency, autostart, logs, and backups.
-- The PCMonitorColor device portal owns screen slots, per-slot labels, display
+- The StatNode device portal owns screen slots, per-slot labels, display
   styles, colors, brightness, clock settings, touch input, WiFi, and firmware.
 
 The Device page reads the firmware's `/api/status` endpoint and displays the

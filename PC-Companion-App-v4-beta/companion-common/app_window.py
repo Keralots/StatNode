@@ -230,7 +230,7 @@ def _make_tray():
         gui_quit()
 
     return core.pystray.Icon(
-        "pcmonitorcolor_companion", img, "PCMonitorColor Companion",
+        "statnode_companion", img, "StatNode Companion",
         menu=core.pystray.Menu(
             core.pystray.MenuItem("Configure", on_configure, default=True),
             core.pystray.MenuItem("Quit", on_quit),
@@ -265,7 +265,7 @@ def _tray_ready(icon, notify_startup):
         icon.visible = True
         if notify_startup:
             icon.notify("Monitoring your PC in the background. Right-click to configure or quit.",
-                        "PCMonitorColor Companion is running")
+                        "StatNode Companion is running")
     except Exception:
         pass
 
@@ -307,7 +307,7 @@ def run(core, start_hidden=False, notify_startup=False):
 
     tray_icon = _make_tray()
     _window = webview.create_window(
-        "PCMonitorColor Companion", url,
+        "StatNode Companion", url,
         width=1180, height=820, min_size=(900, 600), hidden=start_hidden,
         js_api=_JsApi())
 

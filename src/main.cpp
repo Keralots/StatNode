@@ -1,4 +1,4 @@
-// PCMonitorColor - firmware entry point.
+// StatNode - firmware entry point.
 // Boot: settings -> display -> WiFi (STA or AP setup) -> web/OTA server -> UDP
 // metric listener. The device is a passive receiver: the PC companion pushes
 // V2.1 JSON to UDP :4210, which drives the gauge grid. When no packets arrive

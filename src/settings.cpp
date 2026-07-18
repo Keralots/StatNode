@@ -110,7 +110,7 @@ void defaultNetworkSettings(NetworkSettings& ns) {
   ns.use24h = true;
   ns.dateFormat = 0;
   ns.mdnsEnabled = true;
-  sanitizeHostname("pcmonitor", ns.hostname, sizeof(ns.hostname));
+  sanitizeHostname("statnode", ns.hostname, sizeof(ns.hostname));
 }
 
 // ---------------------------------------------------------------------------
@@ -316,7 +316,7 @@ void sanitizeHostname(const char* in, char* out, size_t outSize) {
   while (j > 0 && out[j - 1] == '-') j--;
   out[j] = '\0';
   if (j == 0) {
-    strncpy(out, "pcmonitor", outSize - 1);
+    strncpy(out, "statnode", outSize - 1);
     out[outSize - 1] = '\0';
   }
 }
