@@ -115,6 +115,33 @@ already wired, nothing to connect.
 Pins are set in [`src/lgfx_boards.h`](src/lgfx_boards.h) (backlight in
 `platformio.ini`). Power the panel from 3.3V, not 5V.
 
+## Flashing a prebuilt binary
+
+Releases ship two files per board: `firmware-<version>-<env>.bin` (full image)
+and `OTA_ONLY_firmware-<version>-<env>.bin` (for the portal's Maintenance
+page). Pick the file matching your board's env from the
+[hardware table](#supported-hardware).
+
+**Web flasher (esptool-js):**
+1. Visit the [ESP Web Flasher](https://espressif.github.io/esptool-js/) in
+   desktop **Chrome or Edge** (Web Serial is required, so Firefox, Safari and
+   mobile won't work).
+2. Connect the board via USB. If it constantly connects/disconnects, hold the
+   **BOOT** button, connect to USB while still holding it, then release after
+   connecting. Alternatively, hold **BOOT**, press **RESET** while holding
+   **BOOT**, then release both buttons.
+3. Click **"Connect"** and select your port.
+4. Click **"Choose File"** and select the full image for your board, e.g.
+   `firmware-v1.0.0-esp32c3.bin`. Make sure the env matches your board, or
+   the screen will stay black.
+5. Set **Flash Address** to `0x0`.
+6. Click **"Program"** and wait ~30 seconds.
+7. Done! Continue with [First-run setup](#first-run-setup).
+
+**Manual:**
+`esptool.py --chip esp32c3 --port COM3 --baud 460800 write_flash 0x0 firmware-v1.0.0-esp32c3.bin`
+(use `--chip esp32s3` for the three S3 boards).
+
 ## Build & flash
 
 Built with [PlatformIO](https://platformio.org/).
@@ -128,6 +155,9 @@ pio run -e esp32c3 -t upload
 
 # OTA update an already-running device
 curl -F "firmware=@.pio/build/esp32c3/firmware.bin" http://<device-ip>/ota/upload
+
+# package release binaries (all envs, output in release/<version>/)
+python create_firmware.py
 ```
 
 ## First-run setup
