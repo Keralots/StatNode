@@ -48,6 +48,20 @@ The companion (PCMonitorColor Companion) discovers PC sensors, lets you pick
 which to send, and pushes a JSON packet each second. The device binds each
 metric by id to a display slot. If packets stop, it flips to the idle clock.
 
+### Sensor source (Windows): LibreHardwareMonitor
+
+On Windows the companion reads its sensor data from
+[LibreHardwareMonitor (LHM)](https://github.com/LibreHardwareMonitor/LibreHardwareMonitor),
+so **LHM must be running** for readings to appear. Run it as administrator for
+full CPU/GPU/board coverage, then either:
+
+- **REST API** (default, LHM 0.9.5+): enable *Options → Remote Web Server* (port
+  `8085`). The companion prefers this and reads `/data.json`.
+- **WMI**: the companion falls back to the `root\LibreHardwareMonitor` namespace.
+
+The device's status dot shows `LHM off` (red) when LHM is not running. On Linux
+the companion reads sensors directly and does not need LHM.
+
 ## Supported hardware
 
 All maintained boards are **ST7789 240x240** square panels:
