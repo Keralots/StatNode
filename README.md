@@ -5,7 +5,7 @@ PC streams sensor readings (CPU, GPU, RAM, temps, fans, power, ...) over the
 LAN; the device renders them on a 240x240 panel with selectable "faces", a web
 config portal, and animated idle clocks.
 
-Firmware only talks UDP to the companion — no cloud, no accounts.
+Firmware only talks UDP to the companion. No cloud, no accounts.
 
 ## Monitor faces
 
@@ -19,7 +19,7 @@ Switch face live from the web portal.
 | ![Strips](docs/images/face-strips.png) | ![Duo](docs/images/face-duo.png) | ![Pulse](docs/images/face-pulse.png) |
 
 <sub>Captures are pulled from the device via `/screen.bmp`; the greenish cast is
-RGB332 quantization in the capture only — the real panel blacks are true black.</sub>
+RGB332 quantization in the capture only; the real panel blacks are true black.</sub>
 
 When the PC goes offline the screen shows an idle clock: **Standard**,
 **Breakout**, or an animated **Mario** face (portal, Clock page).
@@ -72,6 +72,26 @@ All maintained boards are **ST7789 240x240** square panels:
 | `esp32s3_zero` | Waveshare ESP32-S3-Zero + ST7789 |
 | `ws_lcd_154` | Waveshare ESP32-S3-Touch-LCD-1.54 |
 | `esp32c3` | LOLIN ESP32-C3 Mini + ST7789 |
+
+## Wiring
+
+For the Super Mini boards you solder a bare ST7789 240x240 SPI module to the
+GPIOs below (SPI, no MISO). `ws_lcd_154` is an integrated board; the panel is
+already wired, nothing to connect.
+
+| ST7789 module | `esp32c3` | `esp32s3` / `esp32s3_zero` |
+|---|---|---|
+| GND | GND | GND |
+| VCC | 3V3 | 3V3 |
+| SCL / SCLK | GPIO21 | GPIO12 |
+| SDA / MOSI | GPIO20 | GPIO11 |
+| RES / RST | GPIO10 | GPIO8 |
+| DC | GPIO7 | GPIO9 |
+| CS | GPIO6 | GPIO10 |
+| BLK (backlight) | GPIO5 | GPIO13 |
+
+Pins are set in [`src/lgfx_boards.h`](src/lgfx_boards.h) (backlight in
+`platformio.ini`). Power the panel from 3.3V, not 5V.
 
 ## Build & flash
 
