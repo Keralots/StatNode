@@ -7,9 +7,9 @@ config portal, and animated idle clocks.
 
 Firmware only talks UDP to the companion. No cloud, no accounts.
 
-StatNode is the color evolution of
+StatNode is the color evolution of my
 [SmallOLED-PCMonitor](https://github.com/Keralots/SmallOLED-PCMonitor), the
-author's 128x64 OLED monitor, which is still actively developed.
+128x64 OLED variant, which is still actively developed.
 
 ## Monitor faces
 
