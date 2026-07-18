@@ -48,6 +48,9 @@ The companion (PCMonitorColor Companion) discovers PC sensors, lets you pick
 which to send, and pushes a JSON packet each second. The device binds each
 metric by id to a display slot. If packets stop, it flips to the idle clock.
 
+The PC and the device must be on the same LAN/subnet, with UDP port `4210`
+reachable from the PC to the device.
+
 ### Sensor source (Windows): LibreHardwareMonitor
 
 On Windows the companion reads its sensor data from
@@ -55,12 +58,27 @@ On Windows the companion reads its sensor data from
 so **LHM must be running** for readings to appear. Run it as administrator for
 full CPU/GPU/board coverage, then either:
 
-- **REST API** (default, LHM 0.9.5+): enable *Options → Remote Web Server* (port
+- **REST API** (default, LHM 0.9.5+): enable *Options > Remote Web Server* (port
   `8085`). The companion prefers this and reads `/data.json`.
 - **WMI**: the companion falls back to the `root\LibreHardwareMonitor` namespace.
 
 The device's status dot shows `LHM off` (red) when LHM is not running. On Linux
 the companion reads sensors directly and does not need LHM.
+
+## Companion app
+
+Source and a prebuilt Windows build live in this repo under
+[`PC-Companion-App-v4-beta/`](PC-Companion-App-v4-beta/).
+
+- **Windows:** run `win-companion/dist/PCMonitorColorCompanion.exe`, or from
+  source `python win-companion/pc_stats_monitor_v4.py` (deps in
+  `win-companion/requirements.txt`).
+- **Linux:** `python linux-companion/pc_stats_monitor_v4_linux.py` (deps in
+  `linux-companion/requirements.txt`).
+
+It opens a local UI at `http://127.0.0.1:8740` where you pick the target device,
+choose which sensors to stream, and set the send interval. See the
+[companion README](PC-Companion-App-v4-beta/README.md) for details.
 
 ## Supported hardware
 
@@ -115,4 +133,23 @@ curl -F "firmware=@.pio/build/esp32c3/firmware.bin" http://<device-ip>/ota/uploa
    Connect and the captive portal opens at `http://192.168.4.1`; enter your WiFi.
    (Improv-over-USB-serial also works in the first 3 minutes.)
 3. After it joins your network, open the device IP / `pcmonitor.local`, bind
-   your metrics on **Metrics & layout**, and start the PC companion.
+   your metrics on **Metrics & layout**, and start the [companion](#companion-app).
+
+## Troubleshooting
+
+- **Screen stuck on the idle clock / no metrics:** the device is not receiving
+  packets. Check the companion is running and pointed at the device IP, that LHM
+  is running (Windows), and that the PC and device share the same subnet with
+  UDP `4210` open.
+- **`pcmonitor.local` does not resolve:** use the device IP directly (shown on
+  the device at boot). mDNS must be enabled (default on) and is flaky on some
+  networks.
+- **Colors look off in a `/screen.bmp` capture:** expected. The capture is
+  RGB332-quantized; the panel itself is full color.
+
+## Credits
+
+Built on [LovyanGFX](https://github.com/lovyan03/LovyanGFX),
+[ArduinoJson](https://github.com/bblanchon/ArduinoJson), and
+[Improv WiFi](https://www.improv-wifi.com/) (vendored under `lib/ImprovWiFi`).
+The color UI chassis is derived from the author's earlier BambuHelper project.
