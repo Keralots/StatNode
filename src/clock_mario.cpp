@@ -791,6 +791,13 @@ bool composeMarioTransition(const MarioLayout& layout,
   bottom = min((int)layout.h, bottom);
   if (right - left > MARIO_DIRTY_SIZE || bottom - top > MARIO_DIRTY_SIZE)
     return false;
+  // The full 64x64 sprite is pushed each time, so keep the window entirely
+  // on-panel. A partially clipped push smears columns at the right edge
+  // during Mario's exit walk (seen with LovyanGFX 1.2.25 on the C3).
+  if (layout.w >= MARIO_DIRTY_SIZE)
+    left = min(left, (int)(layout.w - MARIO_DIRTY_SIZE));
+  if (layout.h >= MARIO_DIRTY_SIZE)
+    top = min(top, (int)(layout.h - MARIO_DIRTY_SIZE));
 
   static lgfx::LGFX_Sprite dirtySprite;
   static bool spriteReady = false;
