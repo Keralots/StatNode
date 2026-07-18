@@ -385,18 +385,41 @@ static FontID fitFontForWidth(const char* s, int16_t maxW, FontID base) {
   return steps[i];
 }
 
-// Scale the already-selected VLW font up (2x / 1.5x) when the cell offers the
-// room - the biggest bundled face is Inter 19pt, which reads small on a cell
-// that holds only a few metrics. Digits have no descenders, so scaled values
-// stay inside the box. Leaves the chosen size ACTIVE; the caller must reset
-// with tft.setTextSize(1.0f) after drawing the value.
-static void scaleValueToCell(const char* s, int16_t maxW, int16_t maxH) {
-  static const float scales[] = { 2.0f, 1.5f, 1.0f };
+// Scale the already-selected VLW font up when the cell offers the room - the
+// biggest bundled face is Inter 19pt, which reads small on a cell that holds
+// only a few metrics. Quarter steps: the coarse 2/1.5/1 ladder left up to 15%
+// of a band's height unused whenever 1.5x just missed. Digits have no
+// descenders, so scaled values stay inside the box. Leaves the chosen size
+// ACTIVE (caller resets with tft.setTextSize(1.0f) after drawing) and returns
+// it so the caller can re-apply the same size after probing other fonts.
+static float scaleValueToCell(const char* s, int16_t maxW, int16_t maxH) {
+  static const float scales[] = { 2.0f, 1.75f, 1.5f, 1.25f, 1.0f };
   for (float sc : scales) {
     tft.setTextSize(sc);
-    if (tft.fontHeight() <= maxH && tft.textWidth(s) <= maxW) return;
+    if (tft.fontHeight() <= maxH && tft.textWidth(s) <= maxW) return sc;
   }
   tft.setTextSize(1.0f);
+  return 1.0f;
+}
+
+// Upgrade the unit face beside a fitted value. The value is always fitted
+// against the FONT_SMALL unit reservation first; a bigger unit face is chosen
+// only when the leftover width absorbs the growth and the value glyph stays
+// taller than the unit. So a narrow % grows beside big digits while a wide
+// RPM simply stays small - the value never shrinks for its unit. Leaves the
+// font state changed; the caller re-applies the value font afterwards.
+static FontID upgradeUnitFont(const char* unit, int16_t slackW,
+                              int16_t valueFh, int16_t smallUnitW) {
+  if (!unit || !unit[0]) return FONT_SMALL;
+  if (valueFh >= 35) {
+    setFont(tft, FONT_LARGE);
+    if ((int16_t)tft.textWidth(unit) - smallUnitW <= slackW) return FONT_LARGE;
+  }
+  if (valueFh >= 24) {
+    setFont(tft, FONT_BODY);
+    if ((int16_t)tft.textWidth(unit) - smallUnitW <= slackW) return FONT_BODY;
+  }
+  return FONT_SMALL;
 }
 
 // Horizontal meter: full-width track + fraction fill, rounded ends.
@@ -536,7 +559,8 @@ static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
 // tallest glyph box a previous draw may have used.
 static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t bandH,
                              const char* val, const char* unit,
-                             uint16_t fg, uint16_t bg, int16_t* prevVw) {
+                             uint16_t fg, uint16_t bg, int16_t* prevVw,
+                             FontID unitFont = FONT_SMALL) {
   const int16_t fh = (int16_t)tft.fontHeight();
   tft.setTextDatum(BL_DATUM);
   tft.setTextColor(fg, bg);
@@ -556,7 +580,7 @@ static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t ba
   if (prevVw && *prevVw == key) return;
   if (bandW > vw) tft.fillRect(x + vw, baseY - fh, bandW - vw, fh, bg);
   if (unit && unit[0]) {
-    setFont(tft, FONT_SMALL);
+    setFont(tft, unitFont);
     const int16_t unitFh = (int16_t)tft.fontHeight();
     const int16_t unitBaseY = baseY - (fh - unitFh) / 2;
     tft.setTextDatum(BL_DATUM);
@@ -684,14 +708,21 @@ static void drawBigNumbersScreen(bool fr) {
     const int16_t availW = cellW - 2 * padX - unitW - 5;
     char probe[12];
     slotProbe(s, m, probe, sizeof(probe));
-    fitFontForWidth(probe, availW, (cellH >= 64) ? FONT_XLARGE : FONT_LARGE);
-    scaleValueToCell(probe, availW, bandH);
+    const FontID vf = fitFontForWidth(probe, availW,
+                                      (cellH >= 64) ? FONT_XLARGE : FONT_LARGE);
+    const float vs = scaleValueToCell(probe, availW, bandH);
+    const int16_t valueFh = (int16_t)tft.fontHeight();
+    const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
+    tft.setTextSize(1.0f);
+    const FontID uf = upgradeUnitFont(text.unit, slackW, valueFh, unitW);
+    setFont(tft, vf);
+    tft.setTextSize(vs);
     static int16_t prevVw[NUM_GAUGE_SLOTS];
     if (fr && !gCaptureRender) prevVw[vis[i].slotIdx] = -1;
     drawValueRegionL(x + padX, baseY, cellW - 2 * padX, bandH,
                      text.value, text.unit,
                      warn ? dispSettings.warnColor : themeSettings.valueColor, bg,
-                     gCaptureRender ? nullptr : &prevVw[vis[i].slotIdx]);
+                     gCaptureRender ? nullptr : &prevVw[vis[i].slotIdx], uf);
 
     drawMeterBar(x + padX, y + cellH - (roomy ? 12 : 7), cellW - 2 * padX, 3,
                  frac, warn ? dispSettings.warnColor : s.arcColor);
@@ -931,14 +962,20 @@ static void drawHeroScreen(bool fr) {
     const int16_t availW = heroW - 24 - unitW - 6;
     char probe[12];
     slotProbe(hs, hm, probe, sizeof(probe));
-    fitFontForWidth(probe, availW, FONT_XLARGE);
-    scaleValueToCell(probe, availW, bandH);
+    const FontID vf = fitFontForWidth(probe, availW, FONT_XLARGE);
+    const float vs = scaleValueToCell(probe, availW, bandH);
+    const int16_t valueFh = (int16_t)tft.fontHeight();
+    const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
+    tft.setTextSize(1.0f);
+    const FontID uf = upgradeUnitFont(heroText.unit, slackW, valueFh, unitW);
+    setFont(tft, vf);
+    tft.setTextSize(vs);
     static int16_t heroPrevVw = -1;
     if (fr && !gCaptureRender) heroPrevVw = -1;
     drawValueRegionL(12, baseY, heroW - 24, bandH,
                      heroText.value, heroText.unit,
                      heroWarn ? dispSettings.warnColor : themeSettings.valueColor, bg,
-                     gCaptureRender ? nullptr : &heroPrevVw);
+                     gCaptureRender ? nullptr : &heroPrevVw, uf);
   }
 
   if (fr) tft.drawFastHLine(8, heroH, w - 16, dispSettings.trackColor);
@@ -1177,9 +1214,13 @@ static void drawDuoScreen(bool fr) {
     char key[16];
     snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
     if (gaugeTextChanged(3, y + bandH, key, label, fr)) {
+      // Tight margins: the band value competes with the chart for width, so
+      // the value region keeps only 10+4 px side padding and an 8 px bottom
+      // margin - together with the quarter scale steps this is what lets a
+      // four-digit RPM reading render a full step larger.
       const int16_t valueW = (n == 1) ? w : chartX;
-      const int16_t baseY = y + bandH - 12;
-      const int16_t bandV = bandH - 36;
+      const int16_t baseY = y + bandH - 8;
+      const int16_t bandV = bandH - 30;
 
       setFont(tft, FONT_SMALL);
       tft.setTextDatum(TL_DATUM);
@@ -1187,23 +1228,29 @@ static void drawDuoScreen(bool fr) {
       tft.drawString(label, 10, y + 6);
       const int16_t lw = tft.textWidth(label);
       const int16_t lfh = (int16_t)tft.fontHeight();
-      tft.fillRect(10 + lw, y + 6, valueW - 20 - lw, lfh, bg);
+      tft.fillRect(10 + lw, y + 6, valueW - 14 - lw, lfh, bg);
       const int16_t gapY = y + 6 + lfh;
       if (baseY - bandV > gapY)
-        tft.fillRect(10, gapY, valueW - 20, baseY - bandV - gapY, bg);
+        tft.fillRect(10, gapY, valueW - 14, baseY - bandV - gapY, bg);
 
       const int16_t unitW = tft.textWidth(text.unit);
-      const int16_t availW = valueW - 20 - unitW - 6;
+      const int16_t availW = valueW - 14 - unitW - 5;
       char probe[12];
       slotProbe(s, m, probe, sizeof(probe));
-      fitFontForWidth(probe, availW, FONT_XLARGE);
-      scaleValueToCell(probe, availW, bandV);
+      const FontID vf = fitFontForWidth(probe, availW, FONT_XLARGE);
+      const float vs = scaleValueToCell(probe, availW, bandV);
+      const int16_t valueFh = (int16_t)tft.fontHeight();
+      const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
+      tft.setTextSize(1.0f);
+      const FontID uf = upgradeUnitFont(text.unit, slackW, valueFh, unitW);
+      setFont(tft, vf);
+      tft.setTextSize(vs);
       static int16_t bandPrevVw[2] = { -1, -1 };
       if (fr && !gCaptureRender) bandPrevVw[b] = -1;
-      drawValueRegionL(10, baseY, valueW - 20, bandV,
+      drawValueRegionL(10, baseY, valueW - 14, bandV,
                        text.value, text.unit,
                        warn ? dispSettings.warnColor : themeSettings.valueColor, bg,
-                       gCaptureRender ? nullptr : &bandPrevVw[b]);
+                       gCaptureRender ? nullptr : &bandPrevVw[b], uf);
     }
 
     if (fr) tft.drawFastHLine(8, y + bandH - 1, w - 16, dispSettings.trackColor);

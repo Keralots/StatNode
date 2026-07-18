@@ -51,7 +51,9 @@ struct BacklightSettings {
   uint8_t  version;
   uint8_t  nightEnabled;
   uint8_t  nightBrightness;
-  uint8_t  reserved;
+  uint8_t  nightOfflineOff;      // display fully off while PC offline inside
+                                 // the night interval (was the reserved byte,
+                                 // so old blobs read back as disabled)
   uint16_t nightStartMinute;     // minute of day, 0..1439
   uint16_t nightEndMinute;       // minute of day, 0..1439
   uint16_t offlineSleepMinutes;  // 0 disables PC-offline sleep

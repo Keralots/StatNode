@@ -113,6 +113,24 @@ void updateBacklightControl() {
     (int32_t)(g_touch_wake_until_ms - nowMs) > 0;
   if (!touchWakeActive) g_touch_wake_until_ms = 0;
 
+  // Night-interval membership is needed by both the dimming schedule and the
+  // offline screen-off option, so it is computed first. Dimming stays gated on
+  // its own enable flag; the off option only needs the interval itself.
+  const time_t epoch = time(nullptr);
+  g_time_valid = epoch >= 1609459200;  // 2021-01-01, safely past an unsynced epoch
+  bool nightWindow = false;
+  if (g_time_valid &&
+      (backlightSettings.nightEnabled || backlightSettings.nightOfflineOff)) {
+    struct tm localTime;
+    localtime_r(&epoch, &localTime);
+    const uint16_t minute = localTime.tm_hour * 60 + localTime.tm_min;
+    const uint16_t start = backlightSettings.nightStartMinute;
+    const uint16_t end = backlightSettings.nightEndMinute;
+    if (start < end) nightWindow = minute >= start && minute < end;
+    else if (start > end) nightWindow = minute >= start || minute < end;
+  }
+  g_night_active = backlightSettings.nightEnabled && nightWindow;
+
   const ScreenState screen = getScreenState();
   const bool sleepEligible = screen == SCREEN_MONITOR || screen == SCREEN_CLOCK;
   if (!sleepEligible || pcData.online) {
@@ -125,21 +143,10 @@ void updateBacklightControl() {
     }
     const uint32_t delayMs =
       (uint32_t)backlightSettings.offlineSleepMinutes * 60000UL;
-    const bool sleepDue = delayMs > 0 && nowMs - g_offline_since_ms >= delayMs;
+    const bool sleepDue =
+      (delayMs > 0 && nowMs - g_offline_since_ms >= delayMs) ||
+      (backlightSettings.nightOfflineOff && nightWindow);
     g_offline_sleeping = sleepDue && !touchWakeActive;
-  }
-
-  const time_t epoch = time(nullptr);
-  g_time_valid = epoch >= 1609459200;  // 2021-01-01, safely past an unsynced epoch
-  g_night_active = false;
-  if (backlightSettings.nightEnabled && g_time_valid) {
-    struct tm localTime;
-    localtime_r(&epoch, &localTime);
-    const uint16_t minute = localTime.tm_hour * 60 + localTime.tm_min;
-    const uint16_t start = backlightSettings.nightStartMinute;
-    const uint16_t end = backlightSettings.nightEndMinute;
-    if (start < end) g_night_active = minute >= start && minute < end;
-    else if (start > end) g_night_active = minute >= start || minute < end;
   }
 
   uint8_t target = g_night_active ? backlightSettings.nightBrightness : brightness;

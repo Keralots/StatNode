@@ -70,7 +70,7 @@ void defaultBacklightSettings(BacklightSettings& bs) {
   bs.version = BACKLIGHT_SETTINGS_VERSION;
   bs.nightEnabled = 0;
   bs.nightBrightness = 32;
-  bs.reserved = 0;
+  bs.nightOfflineOff = 0;
   bs.nightStartMinute = 22 * 60;
   bs.nightEndMinute = 7 * 60;
   bs.offlineSleepMinutes = 0;
@@ -169,6 +169,7 @@ void loadSettings() {
   if (sparkRedrawSec < 1) sparkRedrawSec = 1;
   if (sparkRedrawSec > 60) sparkRedrawSec = 60;
   backlightSettings.nightEnabled = backlightSettings.nightEnabled ? 1 : 0;
+  backlightSettings.nightOfflineOff = backlightSettings.nightOfflineOff ? 1 : 0;
   if (backlightSettings.nightStartMinute >= 24 * 60)
     backlightSettings.nightStartMinute = 22 * 60;
   if (backlightSettings.nightEndMinute >= 24 * 60)

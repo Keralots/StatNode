@@ -13,6 +13,7 @@
 #include <WebServer.h>
 #include <ArduinoJson.h>
 #include <Update.h>
+#include <esp_task_wdt.h>
 #include "esp_ota_ops.h"
 #include <WiFi.h>
 #include <time.h>
@@ -74,6 +75,7 @@ static void streamAsset(const char* data, size_t len, const char* contentType,
     size_t count = min(CHUNK_SIZE, len - offset);
     memcpy_P(chunk, data + offset, count);
     ok = writeClientAll(client, chunk, count);
+    esp_task_wdt_reset();   // large asset + slow client can outlast the WDT
     delay(0);
   }
   free(chunk);
@@ -178,6 +180,7 @@ static void handleApiConfig() {
   formatMinuteOfDay(backlightSettings.nightEndMinute, timeBuf, sizeof(timeBuf));
   backlight["nightEnd"] = timeBuf;
   backlight["offlineSleepMinutes"] = backlightSettings.offlineSleepMinutes;
+  backlight["nightOfflineOff"] = backlightSettings.nightOfflineOff != 0;
 
   JsonObject touch = doc["touch"].to<JsonObject>();
   touch["supported"] = touchInputSupported();
@@ -290,6 +293,7 @@ static void handleConfigExport() {
   backlight["nightStartMinute"] = backlightSettings.nightStartMinute;
   backlight["nightEndMinute"] = backlightSettings.nightEndMinute;
   backlight["offlineSleepMinutes"] = backlightSettings.offlineSleepMinutes;
+  backlight["nightOfflineOff"] = backlightSettings.nightOfflineOff != 0;
 
   JsonObject touch = doc["touch"].to<JsonObject>();
   touch["enabled"] = touchSettings.enabled != 0;
@@ -401,6 +405,7 @@ static void handleSaveDisplay() {
     minuteOfDayArg("nightEnd", backlightSettings.nightEndMinute);
   backlightSettings.offlineSleepMinutes =
     (uint16_t)clampedArg("offlineSleep", backlightSettings.offlineSleepMinutes, 0, 1440);
+  backlightSettings.nightOfflineOff = server.hasArg("nightOfflineOff") ? 1 : 0;
   if (updateTouch) touchSettings = nextTouch;
 #if defined(DISPLAY_CYD)
   bool cydClassic = server.hasArg("cydClassic");
@@ -742,6 +747,9 @@ static void handleConfigImport() {
            nextBacklight.nightEndMinute, uint16_t);
   READ_INT(backlight, "offlineSleepMinutes", 0, 1440,
            nextBacklight.offlineSleepMinutes, uint16_t);
+  // Optional: absent in backups exported before the night screen-off option.
+  if (!backlight["nightOfflineOff"].isNull())
+    READ_BOOL(backlight, "nightOfflineOff", nextBacklight.nightOfflineOff);
 
   READ_BOOL(touch, "enabled", nextTouch.enabled);
   READ_INT(touch, "pin", 0, 48, nextTouch.pin, uint8_t);
@@ -949,6 +957,25 @@ static void handleSaveWifiLegacy() {
   scheduleRestart(1500);
 }
 
+// Post-mortem breadcrumb for the silent-hang investigation: after the task
+// watchdog (see main.cpp) fires, the next boot reports "task_wdt"/"panic"
+// here, distinguishing a wedged loop task from a plain power cycle.
+static const char* resetReasonName() {
+  switch (esp_reset_reason()) {
+    case ESP_RST_POWERON:  return "poweron";
+    case ESP_RST_EXT:      return "external";
+    case ESP_RST_SW:       return "software";
+    case ESP_RST_PANIC:    return "panic";
+    case ESP_RST_INT_WDT:  return "int_wdt";
+    case ESP_RST_TASK_WDT: return "task_wdt";
+    case ESP_RST_WDT:      return "wdt";
+    case ESP_RST_DEEPSLEEP: return "deepsleep";
+    case ESP_RST_BROWNOUT: return "brownout";
+    case ESP_RST_SDIO:     return "sdio";
+    default:               return "unknown";
+  }
+}
+
 static void handleApiStatus() {
   JsonDocument doc;
   doc["product"] = PRODUCT_NAME;
@@ -983,6 +1010,9 @@ static void handleApiStatus() {
   doc["status_flips"]       = acceptedStatusFlips();
   doc["free_heap"]    = ESP.getFreeHeap();
   doc["max_block"]    = ESP.getMaxAllocHeap();
+  doc["reset_reason"] = resetReasonName();
+  doc["wifi_disconnects"]     = wifiDisconnectCount();
+  doc["wifi_last_disc_reason"] = wifiLastDisconnectReason();
   doc["metric_count"] = pcData.count;
   doc["timestamp"] = pcData.timestamp;
   doc["hostname"] = netSettings.hostname;
@@ -1071,19 +1101,27 @@ static void handleScreenshot() {
   server.setContentLength(fileBytes);
   server.send(200, "image/bmp", "");
   WiFiClient client = server.client();
-  client.write(hdr, sizeof(hdr));
+
+  // Abort on the first failed/stalled write. The old raw client.write()
+  // ignored failures, so a browser that navigated away mid-stream (the Colors
+  // page preview does this constantly) left the loop pushing the remaining
+  // rows into a dead socket - each write burning its full TCP timeout while
+  // the whole device sat frozen inside this handler.
+  bool ok = writeClientAll(client, hdr, sizeof(hdr));
 
   // BMP rows run bottom-up. readPixel() returns RGB565 regardless of the
   // sprite's storage depth, so one loop serves both capture modes.
-  for (int16_t y = h - 1; y >= 0; y--) {
+  for (int16_t y = h - 1; y >= 0 && ok; y--) {
     for (int16_t x = 0; x < w; x++) {
       const uint16_t c = spr.readPixel(x, y);
       row[x * 3 + 0] = (uint8_t)((((c) & 0x1F) * 255) / 31);        // B (5 bit)
       row[x * 3 + 1] = (uint8_t)((((c >> 5) & 0x3F) * 255) / 63);   // G (6 bit)
       row[x * 3 + 2] = (uint8_t)((((c >> 11) & 0x1F) * 255) / 31);  // R (5 bit)
     }
-    client.write(row, rowBytes);
+    ok = writeClientAll(client, row, rowBytes);
+    esp_task_wdt_reset();   // a slow-but-alive client may take >30 s total
   }
+  if (!ok) client.stop();
 
   free(row);
   // Sprite intentionally NOT deleted - see the allocation comment above.
@@ -1122,6 +1160,11 @@ static void handleOtaUpload() {
 
   } else if (upload.status == UPLOAD_FILE_WRITE) {
     if (!otaInProgress) return;
+    // The whole multipart upload is parsed inside ONE handleClient() pass, so
+    // loop() cannot feed the task watchdog for the duration - feed it per
+    // received chunk instead (a stalled chunk read is bounded by the HTTP
+    // client timeout, well under the WDT period).
+    esp_task_wdt_reset();
     // Validate the ESP32 image magic byte on the first chunk.
     if (otaFirstChunk && upload.currentSize > 0) {
       otaFirstChunk = false;

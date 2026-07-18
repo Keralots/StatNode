@@ -20,6 +20,26 @@ static String apSSID;
 static bool splashStaStarted = false;
 static unsigned long splashStaStartMs = 0;
 
+// Link-drop telemetry for the hang investigation: the callback runs in the
+// WiFi event task, so it only stores plain counters read by /api/status.
+static volatile uint32_t wifiDisconnects = 0;
+static volatile uint8_t  wifiLastDiscReason = 0;
+
+uint32_t wifiDisconnectCount() { return wifiDisconnects; }
+uint8_t  wifiLastDisconnectReason() { return wifiLastDiscReason; }
+
+static void registerWiFiDiagnostics() {
+  static bool registered = false;
+  if (registered) return;
+  registered = true;
+  WiFi.onEvent(
+    [](WiFiEvent_t, WiFiEventInfo_t info) {
+      wifiDisconnects = wifiDisconnects + 1;
+      wifiLastDiscReason = info.wifi_sta_disconnected.reason;
+    },
+    ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
+}
+
 bool isWiFiConnected() {
   return WiFi.status() == WL_CONNECTED;
 }
@@ -163,6 +183,7 @@ static void beginStaConnectAttempt() {
 void startWiFiDuringSplash() {
   if (strlen(wifiSSID) == 0) return;
 
+  registerWiFiDiagnostics();
   Serial.printf("WiFi: starting background connect during splash: %s\n", wifiSSID);
   beginStaConnectAttempt();
   splashStaStarted = true;
@@ -170,6 +191,7 @@ void startWiFiDuringSplash() {
 }
 
 void initWiFi() {
+  registerWiFiDiagnostics();
   // If we have stored credentials, try STA mode
   if (strlen(wifiSSID) > 0) {
     setScreenState(SCREEN_CONNECTING_WIFI);
