@@ -407,20 +407,26 @@ static inline bool largeCanvas(int16_t w, int16_t h) {
 // Takes the target explicitly so the sprite-composed faces can use it too.
 // Leaves the chosen font ACTIVE at size 1.0 and returns it.
 //
-// The height test measures what the digits actually ink, not fontHeight():
-// fontHeight is ascent + descent, and formatMetricText() output has no
-// descenders, so a fixed ~21% of that box is empty on every face in the ladder
-// (Inter's descent is a stable fraction of its line box, 0.20-0.21 from 20px to
-// 83px). Testing the full box rejects faces whose digits fit comfortably, which
-// costs a whole rung on the short bands a 240x240 panel produces.
-static inline int16_t digitInkHeight(int16_t fontHeight) {
-  return (int16_t)((fontHeight * 79) / 100);
+// Descent of a face, from its reported line box. Inter's descent is a stable
+// 20-21% of fontHeight across every face in this project (3/15, 4/20, 6/28,
+// 7/33, 8/38, 9/47, 12/59, 17/83), and LovyanGFX exposes no descent accessor.
+static inline int16_t fontDescent(int16_t fontHeight) {
+  return (int16_t)((fontHeight * 21) / 100);
 }
 
+// How far a value's glyph box may reach above its band. The value is drawn
+// with an OPAQUE background, so the box - not the ink - is what lands on the
+// panel, and the rows just above a band belong to the label's empty descent.
+// Overrunning by that much is invisible; overrunning by more erases the label,
+// which is exactly what an earlier ink-based fit did to the duo bands (it let
+// a 59px face into a 47px band and the opaque box ate the name above it).
+// FONT_SMALL is the label face everywhere here, so its descent is the budget.
+static const int16_t VALUE_BOX_SLACK = 3;
+
 // Baseline for a value fitted by fitValueFont, given the band below the label.
-// Centers the glyph box in the band, but never lets the box bottom drop past
-// the band: a face whose reported height overflows is one whose empty descent
-// hangs below the digits, and the band is the only region the value may paint.
+// Centers the glyph box in the band and pins its bottom to the band's bottom
+// when the face is taller - the band plus the slack above it is the whole
+// region the value may paint.
 static inline int16_t valueBaseline(int16_t gapY, int16_t band, int16_t fh) {
   const int16_t baseY = gapY + (band + fh) / 2;
   return (baseY > gapY + band) ? (int16_t)(gapY + band) : baseY;
@@ -437,7 +443,7 @@ static FontID fitValueFont(lgfx::LovyanGFX& gfx, const char* s,
   for (uint8_t i = 0; i < last; i++) {
     setFont(gfx, ladder[i]);
     if ((int16_t)gfx.textWidth(s) <= maxW &&
-        digitInkHeight((int16_t)gfx.fontHeight()) <= maxH) {
+        (int16_t)gfx.fontHeight() <= maxH + VALUE_BOX_SLACK) {
       return ladder[i];
     }
   }
@@ -669,10 +675,17 @@ static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t ba
     // is normally set. The large canvas always does this (it never renders a
     // small value here); the square panels now reach 38-59px values too, so
     // they get the same treatment whenever the gap is wide.
+    //
+    // BL_DATUM places a box BOTTOM, not a baseline, so passing baseY straight
+    // through drops the unit by the difference in descents - about 9px under a
+    // 59px value, which reads as the unit having slipped below the number.
+    // Lift it by that difference so the two baselines actually meet.
     const bool baselineUnit =
         largeCanvas((int16_t)tft.width(), (int16_t)tft.height()) ||
         (fh - unitFh) >= 16;
-    const int16_t unitBaseY = baselineUnit ? baseY : baseY - (fh - unitFh) / 2;
+    const int16_t unitBaseY =
+        baselineUnit ? (int16_t)(baseY - (fontDescent(fh) - fontDescent(unitFh)))
+                     : (int16_t)(baseY - (fh - unitFh) / 2);
     tft.setTextDatum(BL_DATUM);
     tft.setTextColor(themeSettings.secondaryColor, bg);
     tft.drawString(unit, x + vw + 5, unitBaseY);
@@ -1585,7 +1598,11 @@ static void drawPulseScreen(bool fr) {
       setFont(blockSpr, big ? ((valueFh >= 60) ? FONT_XLARGE : FONT_LARGE)
                             : FONT_SMALL);
       blockSpr.setTextColor(labelC, cellBg);
-      blockSpr.drawString(text.unit, 9 + vw + 5, valueBaseY);
+      // Baselines, not box bottoms - see drawValueRegionL for why BL_DATUM
+      // needs the descent difference taken out.
+      blockSpr.drawString(text.unit, 9 + vw + 5,
+                          valueBaseY - (fontDescent(valueFh) -
+                                        fontDescent((int16_t)blockSpr.fontHeight())));
 
       blockSpr.pushSprite(tft_ptr, x + 2, y + 2);
       tft.waitDMA();      // shared sprite: barrier before the next block refill
