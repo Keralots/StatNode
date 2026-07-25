@@ -1052,28 +1052,41 @@ static void handleScreenshot() {
   static int16_t capW = 0, capH = 0;
   if (capW != w || capH != h) {
     spr.deleteSprite();
-    spr.setPsram(false);
-    spr.setColorDepth(16);
-    if (!spr.createSprite(w, h)) {
-      spr.setColorDepth(8);
-      if (!spr.createSprite(w, h)) {
-        // Last resort: PSRAM. Only larger panels get here - a 240x240 capture
-        // fits internal RAM at 16-bit (115 KB) or 8-bit (57.6 KB), so the
-        // boards that already work keep their existing internal-RAM path and
-        // their exact capture depth. A 320x480 frame needs 307 KB / 154 KB
-        // contiguous, which no ESP32 internal heap can serve, so without this
-        // the endpoint just 503s there. PSRAM is slower to render into but the
-        // capture path is not latency-critical, and 16-bit avoids the RGB332
-        // green shift that the 8-bit fallback produces.
-        spr.setPsram(true);
-        spr.setColorDepth(16);
-        if (!spr.createSprite(w, h)) {
-          spr.setPsram(false);
-          capW = capH = 0;
-          server.send(503, "text/plain", "Not enough RAM for capture");
-          return;
-        }
+    bool ok = false;
+    // PSRAM FIRST on any board that has it. This sprite is allocated once and
+    // deliberately never freed (that is what stopped the preview flipping
+    // between true colour and the 8-bit green tint between refreshes), so on a
+    // 240x240 panel it was holding 115 KB of INTERNAL heap for the rest of
+    // uptime. Measured on the S3: free heap 18 KB with a 7.6 KB largest block
+    // once the portal preview had run, which left the web server unable to
+    // allocate for new connections - portal saves failed in the browser with
+    // "failed to fetch" while curl still squeezed through. Rendering into PSRAM
+    // is slower, which this path does not care about, and it keeps internal heap
+    // for WiFi/HTTP. Runtime psramFound() rather than BOARD_HAS_PSRAM so a board
+    // whose PSRAM did not come up still gets the internal fallbacks.
+    if (psramFound()) {
+      spr.setPsram(true);
+      spr.setColorDepth(16);
+      ok = spr.createSprite(w, h);
+    }
+    if (!ok) {
+      // No PSRAM (e.g. the C3) or the PSRAM allocation failed: original path.
+      // 240x240 fits internal at 16-bit (115 KB) or 8-bit (57.6 KB). A 320x480
+      // frame needs 307 KB / 154 KB contiguous and will not fit either, so such
+      // a board legitimately reports 503.
+      spr.setPsram(false);
+      spr.setColorDepth(16);
+      ok = spr.createSprite(w, h);
+      if (!ok) {
+        spr.setColorDepth(8);
+        ok = spr.createSprite(w, h);
       }
+    }
+    if (!ok) {
+      spr.setPsram(false);
+      capW = capH = 0;
+      server.send(503, "text/plain", "Not enough RAM for capture");
+      return;
     }
     capW = w;
     capH = h;
