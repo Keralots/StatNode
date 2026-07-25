@@ -44,6 +44,11 @@
 #define CLR_YELLOW       0xFFE0   // warn
 #define CLR_GOLD         0xFEA0   // highlight
 #define CLR_TRACK        0x18E3   // arc background track
+// Accents 7 and 8 for the extra gauge slots, taken from the colorblind-safe
+// categorical set already used by the portal's "modern" preset (#9085e9,
+// #d55181) so a full 8-slot layout stays distinguishable.
+#define CLR_VIOLET       0x943D   // #9085e9
+#define CLR_ROSE         0xD290   // #d55181
 
 // =============================================================================
 //  PC stats ingest (UDP push from the PC companion app)
@@ -100,7 +105,16 @@
 // Configurable metric->gauge mapping: number of editable gauge slots laid out
 // in a responsive grid on the monitor screen. Each slot binds one PC metric
 // (by id) to a gauge style/range/color (see GaugeSlot in settings.h).
-#define NUM_GAUGE_SLOTS              6
+// Raised 6 -> 8 so the larger panels can show more readings at once; the faces
+// lay themselves out from the number of BOUND slots, so this is a ceiling, not
+// a fixed count. Do NOT exceed 8: slotWarn()'s hysteresis state and the Pulse
+// face's quantizer both track slots in a uint8_t bitmask.
+// Growing this changes sizeof(GaugeMapping)/sizeof(GaugeLabels), so
+// loadSettings() migrates the older, smaller NVS blobs (see LEGACY_*_SLOTS in
+// settings.cpp) instead of falling through to defaults and wiping the user's
+// bindings.
+#define NUM_GAUGE_SLOTS              8
+#define LEGACY_GAUGE_SLOTS_V1        6   // slot count shipped before 2026-07-25
 
 // =============================================================================
 //  Physical button

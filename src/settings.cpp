@@ -52,10 +52,16 @@ void defaultGaugeMapping(GaugeMapping& gm) {
   // auto-classify by the metric's unit (same behavior the renderer had before
   // the mapping was configurable). The user overrides any slot from the portal.
   static const uint16_t palette[NUM_GAUGE_SLOTS] = {
-    CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED
+    CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED,
+    CLR_VIOLET, CLR_ROSE
   };
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    gm.slots[i].metricId = i + 1;
+    // Only the first six bind out of the box, which is what every board shipped
+    // with before the slot count grew. Leaving 7 and 8 empty means raising the
+    // ceiling cannot change what an existing or freshly flashed device shows -
+    // the user opts in by picking a metric for them on the portal's Metrics
+    // page. It also keeps a 240x240 panel from defaulting to eight tiny cells.
+    gm.slots[i].metricId = (i < LEGACY_GAUGE_SLOTS_V1) ? (uint8_t)(i + 1) : 0;
     gm.slots[i].type     = GAUGE_TYPE_AUTO;
     gm.slots[i].scaleMax = 0;            // 0 = use the gauge type's default scale
     gm.slots[i].arcColor = palette[i];
@@ -134,11 +140,36 @@ void loadSettings() {
   if (prefs.getBytesLength("net") == sizeof(NetworkSettings)) {
     prefs.getBytes("net", &netSettings, sizeof(NetworkSettings));
   }
-  if (prefs.getBytesLength("gauges") == sizeof(GaugeMapping)) {
-    prefs.getBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
+  // Gauge mapping + labels are sized by NUM_GAUGE_SLOTS, so raising the slot
+  // count changes the blob length. The exact-size checks below would then miss
+  // and silently fall back to defaults, resetting every slot the user bound. So
+  // also accept the older, shorter layout and copy what it holds into the
+  // leading slots; the new trailing slots stay at their defaults (unbound is
+  // the honest state - nothing was ever configured for them).
+  {
+    struct LegacyGaugeMappingV1 { GaugeSlot slots[LEGACY_GAUGE_SLOTS_V1]; };
+    const size_t stored = prefs.getBytesLength("gauges");
+    if (stored == sizeof(GaugeMapping)) {
+      prefs.getBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
+    } else if (stored == sizeof(LegacyGaugeMappingV1)) {
+      LegacyGaugeMappingV1 old;
+      prefs.getBytes("gauges", &old, sizeof(old));
+      for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++) gaugeMap.slots[i] = old.slots[i];
+      Serial.printf("Settings: migrated %u-slot gauge mapping to %u slots\n",
+                    (unsigned)LEGACY_GAUGE_SLOTS_V1, (unsigned)NUM_GAUGE_SLOTS);
+    }
   }
-  if (prefs.getBytesLength("labels") == sizeof(GaugeLabels)) {
-    prefs.getBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
+  {
+    struct LegacyGaugeLabelsV1 { char labels[LEGACY_GAUGE_SLOTS_V1][GAUGE_LABEL_LENGTH]; };
+    const size_t stored = prefs.getBytesLength("labels");
+    if (stored == sizeof(GaugeLabels)) {
+      prefs.getBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
+    } else if (stored == sizeof(LegacyGaugeLabelsV1)) {
+      LegacyGaugeLabelsV1 old;
+      prefs.getBytes("labels", &old, sizeof(old));
+      for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++)
+        strlcpy(gaugeLabels.labels[i], old.labels[i], GAUGE_LABEL_LENGTH);
+    }
   }
   if (prefs.getBytesLength("backlight") == sizeof(BacklightSettings)) {
     BacklightSettings stored;

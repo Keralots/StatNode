@@ -995,7 +995,11 @@ static void drawHeroScreen(bool fr) {
     if (sparkTick) lastSparkMs = millis();
   }
 
-  const int16_t heroH = (gridH * 2) / 5;
+  // 2/5 of a 240px panel is 96px, which the hero band needs. The same ratio on
+  // a 480px panel is 192px and reads as a slab: the value and chart do not grow
+  // proportionally, so the extra height is mostly air while the rows below get
+  // squeezed. Give the big canvas a smaller share.
+  const int16_t heroH = big ? (gridH * 30) / 100 : (gridH * 2) / 5;
   const PcMetric& hm = *vis[0].metric;
   const GaugeSlot& hs = *vis[0].slot;
   const char* heroLabel = vis[0].label;
@@ -1087,7 +1091,13 @@ static void drawHeroScreen(bool fr) {
   // reaches farther right, leaving a stable value area at the panel edge.
   const int16_t rowsY0 = heroH + 2;
   const int16_t rowH = (gridH - rowsY0) / (n - 1);
-  const int16_t bx = w / 4;
+  // Label column. w/4 leaves only 64px of text room at 320px wide, which a
+  // 4-character label like "CPUW" overflows at FONT_LARGE - fitFontForWidth then
+  // drops it to FONT_BODY, and because the ladder mixes weights (inter_19 is
+  // Inter-Bold, inter_14 is Inter-Regular) the label visibly loses its bold as
+  // well as its size, so one row looks wrong next to the others. Widen the
+  // column on the big canvas so the common labels never need to step down.
+  const int16_t bx = big ? (w * 30) / 100 : w / 4;
   const int16_t barRight = (w * 62) / 100;
   const int16_t bw = barRight - bx;
   const int16_t valueLeft = barRight + 3;
@@ -1290,9 +1300,12 @@ static void drawDuoScreen(bool fr) {
   }
 
   const uint8_t bands = (n >= 2) ? 2 : 1;
-  const int16_t bandH = (n == 1) ? (gridH * 2) / 5
-                       : (n == 2) ? gridH / 2
-                       : (gridH * 32) / 100;
+  // Two bands at 32% each take 64% of the panel. That is fine at 240px, but on
+  // a 480px panel it leaves the 2x2 meter grid cramped against the bottom edge
+  // while the bands themselves hold mostly empty space. See drawHeroScreen.
+  const int16_t bandH = (n == 1) ? (big ? (gridH * 30) / 100 : (gridH * 2) / 5)
+                       : (n == 2) ? (big ? (gridH * 40) / 100 : gridH / 2)
+                       : (big ? (gridH * 25) / 100 : (gridH * 32) / 100);
   const int16_t chartX = w / 2 - 2;
 
   RendererWrite rw(tft);
@@ -1421,8 +1434,12 @@ static void drawDuoScreen(bool fr) {
     char valueProbe[20];
     snprintf(valueProbe, sizeof(valueProbe), "%s %s",
              probeText.value, probeText.unit);
+    // LARGE, not XLARGE: these cells are only ~160px wide and the value shares
+    // the row with the label, so an XLARGE 4-digit value plus unit ("462 MB")
+    // butts straight into a 4-character label. Still a clear step up from the
+    // original BODY ceiling.
     fitFontForWidth(valueProbe, cellW - 26 - labelW,
-                    big ? FONT_XLARGE : FONT_BODY);
+                    big ? FONT_LARGE : FONT_BODY);
     drawValueRegionR(x + 10 + labelW + 6, x + cellW - 10, cy, cellH - 14, vb,
                      warn ? dispSettings.warnColor : themeSettings.valueColor, bg);
 
