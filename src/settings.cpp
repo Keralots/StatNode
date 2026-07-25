@@ -84,7 +84,7 @@ void defaultBacklightSettings(BacklightSettings& bs) {
 void defaultTouchSettings(TouchSettings& ts) {
   ts.version = TOUCH_SETTINGS_VERSION;
   ts.enabled = 0;
-  ts.pin = 3;
+  ts.pin = TOUCH_DEFAULT_PIN;
   ts.activeHigh = 1;
   ts.shortAction = TOUCH_ACTION_NEXT_STYLE;
   ts.longAction = TOUCH_ACTION_TOGGLE_POWER;

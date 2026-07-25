@@ -16,7 +16,7 @@ static uint32_t eventCount = 0;
 static const char* lastAction = "none";
 
 bool touchInputSupported() {
-#if defined(BOARD_IS_C3)
+#if defined(BOARD_IS_C3) || defined(BOARD_IS_S3)
   return true;
 #else
   return false;
@@ -28,6 +28,20 @@ bool touchPinAllowed(uint8_t pin) {
   // GPIO 2/8/9 are strapping pins, 12..17 serve flash, 18/19 serve USB,
   // and 5/6/7/10/20/21 are used by this board's backlight and ST7789.
   return pin == 0 || pin == 1 || pin == 3 || pin == 4 || pin == 11;
+#elif defined(BOARD_IS_S3)
+  // ST7789 takes 8..13 on this board (SCLK 12, MOSI 11, DC 9, CS 10, RST 8,
+  // backlight 13), GPIO 19/20 are the native USB CDC this build talks over,
+  // 43/44 are UART0, 0/45/46 are strapping, and 26..37 serve the module's SPI
+  // flash and PSRAM. What is left is electrically safe for a TTP223 output.
+  // This list deliberately does not try to model which pins a given S3 board
+  // physically breaks out - its job is to stop a choice that would kill the
+  // display, USB or boot. The user knows their own wiring and picks from it.
+  // The pre-shipped units wire the TTP223 to GPIO 4, the LED to 2, buzzer to 5.
+#if defined(BOARD_IS_S3_ZERO)
+  // The S3-Zero drives its built-in WS2812 from GPIO 21, so it is not offered.
+  if (pin == 21) return false;
+#endif
+  return (pin >= 1 && pin <= 7) || (pin >= 14 && pin <= 18) || pin == 21;
 #else
   (void)pin;
   return false;

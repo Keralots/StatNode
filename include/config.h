@@ -128,6 +128,13 @@
 #define DEFAULT_BOUND_SLOTS          6
 #endif
 
+// Default GPIO for the TTP223 capacitive pad. 4 on both S3 and C3: that is where
+// the pre-shipped units wire it, and the C3's pad was never physically wired, so
+// there is no reason for the two boards to differ. Only affects factory-fresh and
+// reset devices - the pin is configurable from the portal, and touchPinAllowed()
+// in touch_button.cpp decides what is selectable per board.
+#define TOUCH_DEFAULT_PIN            4
+
 // =============================================================================
 //  Physical button
 // =============================================================================
