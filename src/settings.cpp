@@ -87,7 +87,13 @@ void defaultTouchSettings(TouchSettings& ts) {
   ts.pin = TOUCH_DEFAULT_PIN;
   ts.activeHigh = 1;
   ts.shortAction = TOUCH_ACTION_NEXT_STYLE;
-  ts.longAction = TOUCH_ACTION_TOGGLE_POWER;
+  // Deliberately NOT TOGGLE_POWER. On a capacitive pad a fingertip lingers, so
+  // an accidental long press used to blank the display - and the tap that
+  // followed was consumed waking it back up instead of doing what the user
+  // wanted, which read as "the pad needs several taps". Toggling the clock is
+  // useful, obvious and undone by repeating the gesture. Blanking the screen is
+  // still available, just not one accidental hold away.
+  ts.longAction = TOUCH_ACTION_TOGGLE_CLOCK;
   ts.styleMask = STYLE_ACTIVE_MASK;
   ts.rememberStyle = 0;
 }

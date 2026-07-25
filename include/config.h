@@ -144,7 +144,9 @@
 #define BUTTON_DEFAULT_PIN    4       // default GPIO for physical button
 #endif
 #define TOUCH_DEBOUNCE_MS     50
-#define TOUCH_LONG_PRESS_MS  800
+// 1200 ms, not 800. A mechanical button is released cleanly, but a fingertip
+// rests on a capacitive pad, so 800 ms turned ordinary taps into long presses.
+#define TOUCH_LONG_PRESS_MS 1200
 #define TOUCH_WAKE_MS      30000
 
 // =============================================================================
