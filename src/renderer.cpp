@@ -555,6 +555,40 @@ static void sparkPlot(lgfx::LovyanGFX& g, const SlotHistory& hist,
   }
 }
 
+// Translucent scrim behind overlay text. The strips lanes print their label
+// and reading on top of the chart, and a bright area fill swallows both (a
+// panel photo of the CLK and VRAM lanes made that plain). Blending the pixels
+// under the type toward the background gives it a surface to sit on while the
+// chart shape stays visible underneath - a solid box would punch a hole in the
+// chart, and a drawn outline turns to mush at 12px.
+//
+// Sprite targets only. This reads back what was just drawn, which is a RAM
+// access on a sprite but a slow per-pixel bus read on the panel (and not all
+// panels can read at all), so the no-sprite fallback keeps drawing over the
+// chart the way it always did.
+static void drawTextScrim(lgfx::LGFX_Sprite& spr, int16_t x, int16_t y,
+                          int16_t w, int16_t h, uint16_t bg, uint8_t alpha) {
+  if (x < 0) { w += x; x = 0; }
+  if (y < 0) { h += y; y = 0; }
+  if (x + w > (int16_t)spr.width())  w = (int16_t)spr.width() - x;
+  if (y + h > (int16_t)spr.height()) h = (int16_t)spr.height() - y;
+  if (w <= 0 || h <= 0) return;
+
+  // Clipped corners so the shade reads as a soft panel rather than a hard box.
+  const int16_t r = (w > 8 && h > 8) ? 3 : 0;
+  for (int16_t yy = 0; yy < h; yy++) {
+    const int16_t dy = (yy < r) ? (int16_t)(r - yy)
+                     : (yy >= h - r) ? (int16_t)(yy - (h - 1 - r)) : (int16_t)0;
+    for (int16_t xx = 0; xx < w; xx++) {
+      const int16_t dx = (xx < r) ? (int16_t)(r - xx)
+                       : (xx >= w - r) ? (int16_t)(xx - (w - 1 - r)) : (int16_t)0;
+      if (dx && dy && dx * dx + dy * dy > r * r) continue;
+      const int16_t px = x + xx, py = y + yy;
+      spr.drawPixel(px, py, blend565(alpha, bg, spr.readPixel(px, py)));
+    }
+  }
+}
+
 // Sparkline over a slot's history ring, scaled to the local min/max (padded so
 // a flat line does not hug an edge), 1px polyline with a bright endpoint dot.
 // Composed in a reusable offscreen sprite and pushed in one blit so the
@@ -1137,6 +1171,11 @@ static void drawHeroScreen(bool fr) {
 //  blit; because the text sits on the chart, the whole lane repaints at the
 //  chart cadence (sparkRedrawSec), so readings ride that pace by design.
 // ---------------------------------------------------------------------------
+// How far the scrim under the lane text pulls the chart back toward the
+// background. High enough that a full-height area fill stops competing with
+// the type, low enough that the chart's shape still shows through it.
+static const uint8_t STRIPS_SCRIM_ALPHA = 205;
+
 static void drawStripsScreen(bool fr) {
   const int16_t w = (int16_t)tft.width();
   const int16_t h = (int16_t)tft.height();
@@ -1206,11 +1245,13 @@ static void drawStripsScreen(bool fr) {
     if (i) g.drawFastHLine(0, oy, w, dispSettings.trackColor);
 
     // Overlay text draws foreground-only: the lane is composed fresh, so
-    // there is no previous text to erase.
+    // there is no previous text to erase. Everything is measured before
+    // anything is drawn, so the scrims can be laid down under both runs of
+    // type first - drawing text and then shading it would wash the type out
+    // along with the chart.
     setFont(g, FONT_SMALL);
-    g.setTextDatum(TL_DATUM);
-    g.setTextColor(themedLabelColor(lineColor, bg, CLR_TEXT_DIM));
-    g.drawString(label, 6, oy + 3);
+    const int16_t labelW = g.textWidth(label);
+    const int16_t labelH = (int16_t)g.fontHeight();
     const int16_t unitW = g.textWidth(text.unit);
 
     {
@@ -1222,14 +1263,27 @@ static void drawStripsScreen(bool fr) {
       const int16_t maxW = w / 2 - unitW - 12;
       while (fi < 3 && g.textWidth(probe) > maxW) setFont(g, steps[++fi]);
     }
+    const int16_t valueRight = w - 6 - unitW - 5;
+    const int16_t valueW = g.textWidth(text.value);
+    const int16_t valueH = (int16_t)g.fontHeight();
     const int16_t cy = oy + rowH / 2;
+
+    if (off) {
+      drawTextScrim(rowSpr, 4, oy + 1, labelW + 5, labelH + 4, bg, STRIPS_SCRIM_ALPHA);
+      const int16_t readLeft = valueRight - valueW - 5;
+      drawTextScrim(rowSpr, readLeft, cy - valueH / 2 - 2,
+                    w - 2 - readLeft, valueH + 4, bg, STRIPS_SCRIM_ALPHA);
+    }
+
     g.setTextDatum(MR_DATUM);
     g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
-    g.drawString(text.value, w - 6 - unitW - 5, cy);
+    g.drawString(text.value, valueRight, cy);
     setFont(g, FONT_SMALL);
     g.setTextColor(themeSettings.secondaryColor);
     g.drawString(text.unit, w - 6, cy);
     g.setTextDatum(TL_DATUM);
+    g.setTextColor(themedLabelColor(lineColor, bg, CLR_TEXT_DIM));
+    g.drawString(label, 6, oy + 3);
 
     if (off) {
       rowSpr.pushSprite(tft_ptr, 0, y);
