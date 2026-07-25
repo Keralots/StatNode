@@ -117,6 +117,21 @@ struct TouchSettings {
   uint8_t rememberStyle;
 };
 
+// Status LED settings get their own versioned blob for the same reason the
+// touch settings do: adding them must not invalidate display or network
+// configuration after an OTA update. A single-color LED on a PWM pin, so
+// there is no color field - see src/led.cpp.
+struct LedSettings {
+  uint8_t version;
+  uint8_t enabled;
+  uint8_t pin;
+  uint8_t brightness;       // 0..255, the normal daytime level
+  uint8_t nightEnabled;     // use nightBrightness inside the night interval
+  uint8_t nightBrightness;  // 0..255, 0 switches the LED fully off at night
+  uint8_t followDisplay;    // dark whenever the panel itself is dark
+  uint8_t offlineOff;       // dark while the PC companion is offline
+};
+
 enum ThemeLabelMode : uint8_t {
   THEME_LABEL_CLASSIC = 0,  // preserve each layout's original label treatment
   THEME_LABEL_CUSTOM  = 1,  // use ThemeSettings::labelColor
@@ -190,6 +205,7 @@ extern GaugeMapping gaugeMap;
 extern GaugeLabels gaugeLabels;
 extern BacklightSettings backlightSettings;
 extern TouchSettings touchSettings;
+extern LedSettings ledSettings;
 extern ThemeSettings themeSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
 extern uint8_t clockFace;      // ClockFace value
@@ -204,6 +220,8 @@ void defaultGaugeMapping(GaugeMapping& gm);
 void defaultGaugeLabels(GaugeLabels& labels);
 void defaultBacklightSettings(BacklightSettings& bs);
 void defaultTouchSettings(TouchSettings& ts);
+void defaultLedSettings(LedSettings& ls);
+void saveLedSettings();
 void defaultThemeSettings(ThemeSettings& ts);
 void saveDisplayStyle();
 

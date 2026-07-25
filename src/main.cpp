@@ -12,6 +12,7 @@
 #include "web_server.h"
 #include "pc_metrics.h"
 #include "touch_button.h"
+#include "led.h"
 
 // Loop-task watchdog. The Arduino core leaves the idle-task watchdog disabled,
 // so any indefinite block in loop() used to hang the device silently and
@@ -46,6 +47,7 @@ void setup() {
   initWebServer();
   pcMetricsBegin();
   initTouchButton();
+  initLed();
 
   if (isWiFiConnected()) setScreenState(SCREEN_MONITOR);
 
@@ -79,6 +81,9 @@ void loop() {
   }
 
   updateBacklightControl();
+  // After the backlight: the LED reads the level the panel just settled on to
+  // decide whether it should be dark too.
+  ledTick();
   updateDisplay();
   flushFrame();
 }

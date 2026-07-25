@@ -1,5 +1,6 @@
 #include "settings.h"
 #include "config.h"
+#include "led.h"       // sanitizeLedPin() - the LED pin is validated per board
 #include <Preferences.h>
 
 // Global settings instances.
@@ -12,6 +13,7 @@ GaugeMapping gaugeMap;
 GaugeLabels gaugeLabels;
 BacklightSettings backlightSettings;
 TouchSettings touchSettings;
+LedSettings ledSettings;
 ThemeSettings themeSettings;
 uint8_t displayStyle = STYLE_DEFAULT;
 uint8_t clockFace = CLOCK_FACE_STANDARD;
@@ -20,6 +22,7 @@ uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 static Preferences prefs;
 static const uint8_t BACKLIGHT_SETTINGS_VERSION = 1;
 static const uint8_t TOUCH_SETTINGS_VERSION = 1;
+static const uint8_t LED_SETTINGS_VERSION = 1;
 static const uint8_t THEME_SETTINGS_VERSION = 1;
 
 // ---------------------------------------------------------------------------
@@ -98,6 +101,20 @@ void defaultTouchSettings(TouchSettings& ts) {
   ts.rememberStyle = 0;
 }
 
+void defaultLedSettings(LedSettings& ls) {
+  ls.version = LED_SETTINGS_VERSION;
+  ls.enabled = 0;
+  // No board here ships an LED on a known pin, so the default is the "unset"
+  // sentinel and the user names the GPIO on the Hardware page. LED_DEFAULT_PIN
+  // stays the single source of that sentinel (see ledPinAllowed()).
+  ls.pin = LED_DEFAULT_PIN;
+  ls.brightness = 160;
+  ls.nightEnabled = 1;
+  ls.nightBrightness = 24;
+  ls.followDisplay = 1;
+  ls.offlineOff = 0;
+}
+
 void defaultThemeSettings(ThemeSettings& ts) {
   ts.version = THEME_SETTINGS_VERSION;
   ts.labelMode = THEME_LABEL_CLASSIC;
@@ -135,6 +152,7 @@ void loadSettings() {
   defaultGaugeLabels(gaugeLabels);
   defaultBacklightSettings(backlightSettings);
   defaultTouchSettings(touchSettings);
+  defaultLedSettings(ledSettings);
   defaultThemeSettings(themeSettings);
 
   prefs.begin(NVS_NAMESPACE, true);  // read-only
@@ -186,6 +204,11 @@ void loadSettings() {
     prefs.getBytes("touch", &stored, sizeof(stored));
     if (stored.version == TOUCH_SETTINGS_VERSION) touchSettings = stored;
   }
+  if (prefs.getBytesLength("led") == sizeof(LedSettings)) {
+    LedSettings stored;
+    prefs.getBytes("led", &stored, sizeof(stored));
+    if (stored.version == LED_SETTINGS_VERSION) ledSettings = stored;
+  }
   if (prefs.getBytesLength("theme") == sizeof(ThemeSettings)) {
     ThemeSettings stored;
     prefs.getBytes("theme", &stored, sizeof(stored));
@@ -225,6 +248,9 @@ void loadSettings() {
     touchSettings.styleMask = 1u << STYLE_DEFAULT;
   const bool migrateTouchStyleMask =
     touchSettings.styleMask != storedTouchStyleMask;
+  // After the touch pin is settled: the LED may not sit on a pin the pad has
+  // claimed, and sanitizeLedPin() tests exactly that.
+  sanitizeLedPin();
   if (themeSettings.labelMode >= THEME_LABEL_MODE_COUNT)
     themeSettings.labelMode = THEME_LABEL_CLASSIC;
   if (themeSettings.tileTintPct > 30) themeSettings.tileTintPct = 30;
@@ -246,10 +272,20 @@ void loadSettings() {
   }
 }
 
+// Write just the LED blob. The hold-free path for the Hardware page: a
+// brightness change should not rewrite every other NVS key.
+void saveLedSettings() {
+  sanitizeLedPin();
+  prefs.begin(NVS_NAMESPACE, false);
+  prefs.putBytes("led", &ledSettings, sizeof(LedSettings));
+  prefs.end();
+}
+
 void saveSettings() {
   // Keep the old field coherent for downgrade compatibility. Mario maps to
   // Standard on firmware versions that predate the dedicated scalar.
   dispSettings.pongClock = clockFace == CLOCK_FACE_BREAKOUT;
+  sanitizeLedPin();
   displayStyle = normalizeDisplayStyle(displayStyle);
   touchSettings.styleMask &= STYLE_ACTIVE_MASK;
   if (touchSettings.styleMask == 0)
@@ -261,6 +297,7 @@ void saveSettings() {
   prefs.putBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
   prefs.putBytes("backlight", &backlightSettings, sizeof(BacklightSettings));
   prefs.putBytes("touch", &touchSettings, sizeof(TouchSettings));
+  prefs.putBytes("led", &ledSettings, sizeof(LedSettings));
   prefs.putBytes("theme", &themeSettings, sizeof(ThemeSettings));
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPass);

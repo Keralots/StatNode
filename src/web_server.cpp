@@ -7,6 +7,7 @@
 #include "display_ui.h"
 #include "pc_metrics.h"
 #include "touch_button.h"
+#include "led.h"
 #include "fonts.h"
 #include "config.h"
 #include "web_pages.h"
@@ -197,6 +198,20 @@ static void handleApiConfig() {
     if (touchPinAllowed(pin)) allowedPins.add(pin);
   }
 
+  JsonObject led = doc["led"].to<JsonObject>();
+  led["enabled"] = ledSettings.enabled != 0;
+  led["pin"] = ledSettings.pin;
+  led["pinValid"] = ledPinValid();
+  led["brightness"] = ledSettings.brightness;
+  led["nightEnabled"] = ledSettings.nightEnabled != 0;
+  led["nightBrightness"] = ledSettings.nightBrightness;
+  led["followDisplay"] = ledSettings.followDisplay != 0;
+  led["offlineOff"] = ledSettings.offlineOff != 0;
+  JsonArray ledPins = led["allowedPins"].to<JsonArray>();
+  for (uint8_t pin = 0; pin <= 48; pin++) {
+    if (ledPinAllowed(pin)) ledPins.add(pin);
+  }
+
   JsonObject colors = doc["colors"].to<JsonObject>();
   addHtmlColor(colors, "bg", dispSettings.bgColor);
   addHtmlColor(colors, "track", dispSettings.trackColor);
@@ -360,34 +375,92 @@ static void handleConfigExport() {
 // ---------------------------------------------------------------------------
 //  Save handlers
 // ---------------------------------------------------------------------------
-static void handleSaveDisplay() {
-  bool panelChanged = false;
-  TouchSettings nextTouch = touchSettings;
-  const bool updateTouch = touchInputSupported();
-  if (updateTouch) {
-    nextTouch.enabled = server.hasArg("touchEnabled") ? 1 : 0;
-    nextTouch.pin = (uint8_t)clampedArg("touchPin", nextTouch.pin, 0, 48);
-    nextTouch.activeHigh = server.hasArg("touchActiveHigh") ? 1 : 0;
-    nextTouch.shortAction =
-      (uint8_t)clampedArg("touchShort", nextTouch.shortAction, 0, TOUCH_ACTION_COUNT - 1);
-    nextTouch.longAction =
-      (uint8_t)clampedArg("touchLong", nextTouch.longAction, 0, TOUCH_ACTION_COUNT - 1);
-    nextTouch.rememberStyle = server.hasArg("touchRemember") ? 1 : 0;
-    nextTouch.styleMask = 0;
+// Peripherals moved to their own page and endpoint; /save/display keeps only
+// what the panel itself does. Touch args posted here are ignored rather than
+// rejected, so an old bookmark or script cannot 400 on a display change.
+static void handleSaveHardware() {
+  // The LED pin is validated against the pad settings from THIS post, so the
+  // touch block has to land in the globals before the LED block runs. Keep the
+  // previous values to roll back with: a rejected save must leave nothing
+  // applied, or the next save from any other page would persist half of it.
+  const TouchSettings prevTouch = touchSettings;
+  if (touchInputSupported()) {
+    TouchSettings next = touchSettings;
+    next.enabled = server.hasArg("touchEnabled") ? 1 : 0;
+    next.pin = (uint8_t)clampedArg("touchPin", next.pin, 0, 48);
+    next.activeHigh = server.hasArg("touchActiveHigh") ? 1 : 0;
+    next.shortAction =
+      (uint8_t)clampedArg("touchShort", next.shortAction, 0, TOUCH_ACTION_COUNT - 1);
+    next.longAction =
+      (uint8_t)clampedArg("touchLong", next.longAction, 0, TOUCH_ACTION_COUNT - 1);
+    next.rememberStyle = server.hasArg("touchRemember") ? 1 : 0;
+    next.styleMask = 0;
     for (uint8_t i = STYLE_BIG_NUMBERS; i < STYLE_COUNT; i++) {
       char key[16];
       snprintf(key, sizeof(key), "touchStyle%u", i);
-      if (server.hasArg(key)) nextTouch.styleMask |= 1u << i;
+      if (server.hasArg(key)) next.styleMask |= 1u << i;
     }
-    if (!touchPinAllowed(nextTouch.pin)) {
-      sendJsonMessage(400, false, "That GPIO is reserved or unsupported on this board.");
+    if (!touchPinAllowed(next.pin)) {
+      sendJsonMessage(400, false, "That touch GPIO is reserved or unsupported on this board.");
       return;
     }
-    if (nextTouch.styleMask == 0) {
+    // Only meaningful while the pad is enabled - an unused pad must not block
+    // saving the rest of the page.
+    if (next.enabled && next.styleMask == 0) {
       sendJsonMessage(400, false, "Select at least one layout for touch cycling.");
       return;
     }
+    if (next.styleMask == 0) next.styleMask = touchSettings.styleMask;
+    touchSettings = next;
   }
+
+  LedSettings nextLed = ledSettings;
+  nextLed.enabled = server.hasArg("ledEnabled") ? 1 : 0;
+  nextLed.pin = (uint8_t)clampedArg("ledPin", nextLed.pin, 0, 48);
+  nextLed.brightness = (uint8_t)clampedArg("ledBrightness", nextLed.brightness, 0, 255);
+  nextLed.nightEnabled = server.hasArg("ledNightEnabled") ? 1 : 0;
+  nextLed.nightBrightness =
+    (uint8_t)clampedArg("ledNightBrightness", nextLed.nightBrightness, 0, 255);
+  nextLed.followDisplay = server.hasArg("ledFollowDisplay") ? 1 : 0;
+  nextLed.offlineOff = server.hasArg("ledOfflineOff") ? 1 : 0;
+  // Validated against the touch settings that were just accepted above, so a
+  // save that moves the pad onto the LED's pin is refused instead of silently
+  // disabling the LED on the next boot.
+  if (nextLed.enabled && !ledPinAllowed(nextLed.pin)) {
+    touchSettings = prevTouch;
+    sendJsonMessage(400, false,
+                    "That LED GPIO is reserved, in use, or unsupported on this board.");
+    return;
+  }
+  ledSettings = nextLed;
+
+  saveSettings();
+  initTouchButton();
+  initLed();
+  sendJsonMessage(200, true, "Hardware settings applied.");
+}
+
+static void handleLedPreview() {
+  const bool enabled = server.hasArg("ledEnabled");
+  const uint8_t pin = (uint8_t)clampedArg("ledPin", ledSettings.pin, 0, 48);
+  const uint8_t level =
+    (uint8_t)clampedArg("ledBrightness", ledSettings.brightness, 0, 255);
+  if (server.hasArg("stop")) {
+    clearLedPreview();
+    sendJsonMessage(200, true, "Preview ended.");
+    return;
+  }
+  if (enabled && !ledPinAllowed(pin)) {
+    sendJsonMessage(400, false,
+                    "That LED GPIO is reserved, in use, or unsupported on this board.");
+    return;
+  }
+  previewLed(enabled, pin, level);
+  sendJsonMessage(200, true, "Preview applied.");
+}
+
+static void handleSaveDisplay() {
+  bool panelChanged = false;
 
   displayStyle = displayStyleArg("style", displayStyle);
   dispSettings.rotation = (uint8_t)clampedArg("rotation", dispSettings.rotation, 0, 3);
@@ -409,7 +482,6 @@ static void handleSaveDisplay() {
   backlightSettings.offlineSleepMinutes =
     (uint16_t)clampedArg("offlineSleep", backlightSettings.offlineSleepMinutes, 0, 1440);
   backlightSettings.nightOfflineOff = server.hasArg("nightOfflineOff") ? 1 : 0;
-  if (updateTouch) touchSettings = nextTouch;
 #if defined(DISPLAY_CYD)
   bool cydClassic = server.hasArg("cydClassic");
   panelChanged = cydClassic != dispSettings.cydPanelClassic;
@@ -417,7 +489,6 @@ static void handleSaveDisplay() {
 #endif
 
   saveSettings();
-  initTouchButton();
   refreshBacklightControl();
   applyDisplaySettings();
   markScreenCleared();
@@ -1007,6 +1078,9 @@ static void handleApiStatus() {
   doc["touch_last_action"] = touchLastAction();
   doc["touch_events"] = touchEventCount();
   doc["touch_last_ms"] = touchLastEventMs();
+  doc["led_enabled"] = ledSettings.enabled != 0;
+  doc["led_pin_valid"] = ledPinValid();
+  doc["led_duty"] = ledCurrentDuty();
   doc["spark_sprite"] = sparkSpriteActive();
   doc["spark_fails"]  = sparkSpriteFails();
   doc["raw_n_changes"]      = rawNChanges();
@@ -1275,6 +1349,8 @@ void initWebServer() {
   server.on("/portal.js", HTTP_GET, handlePortalJs);
   server.on("/save/wifi", HTTP_POST, handleSaveWifiLegacy);
   server.on("/save/display", HTTP_POST, handleSaveDisplay);
+  server.on("/save/hardware", HTTP_POST, handleSaveHardware);
+  server.on("/led/preview", HTTP_POST, handleLedPreview);
   server.on("/save/gauges", HTTP_POST, handleSaveGauges);
   server.on("/save/colors", HTTP_POST, handleSaveColors);
   server.on("/save/clock", HTTP_POST, handleSaveClock);
