@@ -35,10 +35,11 @@ FIRMWARE_OFFSET = 0x10000
 # under .pio/build/, so variants never share object files and don't need a
 # clean between builds.
 ENVS = [
-    'esp32s3',       # LOLIN ESP32-S3 Mini + ST7789
-    'esp32s3_zero',  # Waveshare ESP32-S3-Zero + ST7789
-    'ws_lcd_154',    # Waveshare ESP32-S3-Touch-LCD-1.54
-    'esp32c3',       # LOLIN ESP32-C3 Mini + ST7789
+    'esp32s3',       # LOLIN ESP32-S3 Mini + ST7789 240x240
+    'esp32s3_zero',  # Waveshare ESP32-S3-Zero + ST7789 240x240
+    'ws_lcd_154',    # Waveshare ESP32-S3-Touch-LCD-1.54 240x240
+    'esp32c3',       # LOLIN ESP32-C3 Mini + ST7789 240x240
+    'jc3248w535',    # Guition JC3248W535 3.5" 320x480 (16MB flash)
 ]
 
 

@@ -2,8 +2,8 @@
 
 Live PC sensor monitor for small ESP32 color displays. A companion app on your
 PC streams sensor readings (CPU, GPU, RAM, temps, fans, power, ...) over the
-LAN; the device renders them on a 240x240 panel with selectable "faces", a web
-config portal, and animated idle clocks.
+LAN; the device renders them on a small color panel with selectable "faces", a
+web config portal, and animated idle clocks.
 
 Firmware only talks UDP to the companion. No cloud, no accounts.
 
@@ -45,7 +45,7 @@ night schedule, touch), **Metrics & layout** (drag metrics into slots),
 ## How it works
 
 ```
-PC companion app  --UDP :4210 JSON-->  ESP32  -->  240x240 panel + web portal
+PC companion app  --UDP :4210 JSON-->  ESP32  -->  color panel + web portal
 ```
 
 The companion (StatNode Companion) discovers PC sensors, lets you pick
@@ -86,20 +86,23 @@ choose which sensors to stream, and set the send interval. See the
 
 ## Supported hardware
 
-All maintained boards are **ST7789 240x240** square panels:
+| Env | Board | Panel |
+|---|---|---|
+| `esp32s3` (default) | LOLIN ESP32-S3 Mini + ST7789 | 240x240 |
+| `esp32s3_zero` | Waveshare ESP32-S3-Zero + ST7789 | 240x240 |
+| `ws_lcd_154` | Waveshare ESP32-S3-Touch-LCD-1.54 | 240x240 |
+| `esp32c3` | LOLIN ESP32-C3 Mini + ST7789 | 240x240 |
+| `jc3248w535` | Guition JC3248W535 (3.5", 16MB / 8MB PSRAM) | 320x480 |
 
-| Env | Board |
-|---|---|
-| `esp32s3` (default) | LOLIN ESP32-S3 Mini + ST7789 |
-| `esp32s3_zero` | Waveshare ESP32-S3-Zero + ST7789 |
-| `ws_lcd_154` | Waveshare ESP32-S3-Touch-LCD-1.54 |
-| `esp32c3` | LOLIN ESP32-C3 Mini + ST7789 |
+The faces lay themselves out from the live canvas size, so both the 240x240
+square panels and the larger 320x480 Guition are first-class. Rotation is a
+runtime setting, so the Guition can be mounted portrait or landscape.
 
 ## Wiring
 
 For the Super Mini boards you solder a bare ST7789 240x240 SPI module to the
-GPIOs below (SPI, no MISO). `ws_lcd_154` is an integrated board; the panel is
-already wired, nothing to connect.
+GPIOs below (SPI, no MISO). `ws_lcd_154` and `jc3248w535` are integrated boards;
+their panels are already wired, nothing to connect.
 
 | ST7789 module | `esp32c3` | `esp32s3` / `esp32s3_zero` |
 |---|---|---|
@@ -140,7 +143,7 @@ page). Pick the file matching your board's env from the
 
 **Manual:**
 `esptool.py --chip esp32c3 --port COM3 --baud 460800 write_flash 0x0 firmware-v1.0.0-esp32c3.bin`
-(use `--chip esp32s3` for the three S3 boards).
+(use `--chip esp32s3` for the four S3 boards).
 
 ## Build & flash
 

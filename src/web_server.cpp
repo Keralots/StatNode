@@ -1052,13 +1052,27 @@ static void handleScreenshot() {
   static int16_t capW = 0, capH = 0;
   if (capW != w || capH != h) {
     spr.deleteSprite();
+    spr.setPsram(false);
     spr.setColorDepth(16);
     if (!spr.createSprite(w, h)) {
       spr.setColorDepth(8);
       if (!spr.createSprite(w, h)) {
-        capW = capH = 0;
-        server.send(503, "text/plain", "Not enough RAM for capture");
-        return;
+        // Last resort: PSRAM. Only larger panels get here - a 240x240 capture
+        // fits internal RAM at 16-bit (115 KB) or 8-bit (57.6 KB), so the
+        // boards that already work keep their existing internal-RAM path and
+        // their exact capture depth. A 320x480 frame needs 307 KB / 154 KB
+        // contiguous, which no ESP32 internal heap can serve, so without this
+        // the endpoint just 503s there. PSRAM is slower to render into but the
+        // capture path is not latency-critical, and 16-bit avoids the RGB332
+        // green shift that the 8-bit fallback produces.
+        spr.setPsram(true);
+        spr.setColorDepth(16);
+        if (!spr.createSprite(w, h)) {
+          spr.setPsram(false);
+          capW = capH = 0;
+          server.send(503, "text/plain", "Not enough RAM for capture");
+          return;
+        }
       }
     }
     capW = w;
