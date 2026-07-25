@@ -56,12 +56,11 @@ void defaultGaugeMapping(GaugeMapping& gm) {
     CLR_VIOLET, CLR_ROSE
   };
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    // Only the first six bind out of the box, which is what every board shipped
-    // with before the slot count grew. Leaving 7 and 8 empty means raising the
-    // ceiling cannot change what an existing or freshly flashed device shows -
-    // the user opts in by picking a metric for them on the portal's Metrics
-    // page. It also keeps a 240x240 panel from defaulting to eight tiny cells.
-    gm.slots[i].metricId = (i < LEGACY_GAUGE_SLOTS_V1) ? (uint8_t)(i + 1) : 0;
+    // Board-dependent: eight on the 320x480 panel, six on the 240x240 squares
+    // (see DEFAULT_BOUND_SLOTS). Slots past that start empty, so a device never
+    // boots into more readings than its panel carries well, and the user adds or
+    // removes tiles by binding/clearing slots on the portal's Metrics page.
+    gm.slots[i].metricId = (i < DEFAULT_BOUND_SLOTS) ? (uint8_t)(i + 1) : 0;
     gm.slots[i].type     = GAUGE_TYPE_AUTO;
     gm.slots[i].scaleMax = 0;            // 0 = use the gauge type's default scale
     gm.slots[i].arcColor = palette[i];

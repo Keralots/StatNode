@@ -116,6 +116,18 @@
 #define NUM_GAUGE_SLOTS              8
 #define LEGACY_GAUGE_SLOTS_V1        6   // slot count shipped before 2026-07-25
 
+// How many slots come pre-bound on a factory-fresh or reset device. The 320x480
+// panel shows eight readings comfortably; a 240x240 square starts to crowd past
+// six. This is ONLY the out-of-box default - how many tiles appear is always the
+// number of slots that have a metric bound, which the user changes on the
+// portal's Metrics page. There is deliberately no separate "slot count" setting
+// to disagree with the bindings.
+#if defined(DISPLAY_320x480)
+#define DEFAULT_BOUND_SLOTS          8
+#else
+#define DEFAULT_BOUND_SLOTS          6
+#endif
+
 // =============================================================================
 //  Physical button
 // =============================================================================
