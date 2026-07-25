@@ -19,15 +19,19 @@ enum FontID : uint8_t {
     // scripts/generate_vlw_fonts.py. They carry '0'-'9', '.', '-', ' ' and 'k'
     // and NOTHING else, so they must only ever render formatMetricText() /
     // slotProbe() output. Drawing a label or unit with one renders nothing for
-    // the missing glyphs. Like FONT_XLARGE they are only linked on
-    // DISPLAY_320x480 and fall back to FONT_LARGE elsewhere.
+    // the missing glyphs.
     //
-    // They exist because the 320x480 grid faces get ~160px-tall cells, where
-    // the 26px FONT_XLARGE had to be magnified ~2x via setTextSize(). That
-    // stretches the glyph's 8-bit alpha ramp and reads as blurry on the panel;
-    // rendering natively at the target size keeps the digits crisp.
-    FONT_NUM_XL  = 8,  // Inter Bold 48px, digits only
-    FONT_NUM_XXL = 9,  // Inter Bold 68px, digits only
+    // They exist because a value band is usually much taller than the biggest
+    // text face, and the alternative is magnifying a 22-26px glyph with
+    // setTextSize(). That stretches the glyph's 8-bit alpha ramp and reads as
+    // blurry on the panel; rendering natively at the target size keeps the
+    // digits crisp. Unlike FONT_XLARGE these are linked on EVERY board: the
+    // 240x240 panels magnified up to 2x, which is where the blur was worst.
+    // Their heights (fontHeight, not pixel size) are 38 / 47 / 59 / 83.
+    FONT_NUM_M   = 8,   // Inter Bold 30px, digits only
+    FONT_NUM_L   = 9,   // Inter Bold 38px, digits only
+    FONT_NUM_XL  = 10,  // Inter Bold 48px, digits only
+    FONT_NUM_XXL = 11,  // Inter Bold 68px, digits only
 };
 
 // Sets the active font. Caches the last selection - calling setFont() repeatedly

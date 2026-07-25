@@ -68,10 +68,17 @@ FONTS = [
     # the larger canvas can afford a taller inscribed number without
     # crowding the secondary line below it.
     ("inter_22", "Inter-Bold.ttf",    26, CHARSET_TEXT),
-    # Oversized value faces, jc3248w535 only. The 320x480 panel gives the grid
-    # faces ~160px-tall cells, where a 26px glyph had to be magnified ~2x with
+    # Oversized value faces, linked on every board. Wherever a face is picked
+    # to fill a cell, the alternative is magnifying a 22-26px glyph with
     # setTextSize() - that stretches the glyph's 8-bit alpha ramp and reads as
     # blurry. These render natively instead, so the digits stay crisp.
+    # The four sizes are chosen against the value bands the faces actually
+    # produce (fitValueFont measures fontHeight, which is ~1.22x the pixel size
+    # for Inter): 30px covers the ~39px band a 240x240 panel gives a 6-metric
+    # grid, 38px the ~47-61px bands of its roomier layouts, 48/68px the tall
+    # cells on 320x480.
+    ("inter_num_30", "Inter-Bold.ttf", 30, CHARSET_NUMERIC),
+    ("inter_num_38", "Inter-Bold.ttf", 38, CHARSET_NUMERIC),
     ("inter_num_48", "Inter-Bold.ttf", 48, CHARSET_NUMERIC),
     ("inter_num_68", "Inter-Bold.ttf", 68, CHARSET_NUMERIC),
 ]

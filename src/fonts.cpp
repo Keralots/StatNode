@@ -12,11 +12,14 @@
 // can render larger on the bigger canvas. Excluded from other boards to
 // keep the C3 / S3 Mini flash footprints unchanged.
 #include "fonts/inter_22.h"
-// Plus two digits-only value faces (~11 KB + ~21 KB) so the tall cells on this
-// panel can render big numbers natively instead of magnifying a 26px glyph.
+#endif
+// Digits-only value faces (~4 + 7 + 11 + 21 KB), linked on every board so the
+// monitor faces can render their big numbers natively instead of magnifying a
+// 22-26px glyph with setTextSize(). Cheap because the charset is 14 glyphs.
+#include "fonts/inter_num_30.h"
+#include "fonts/inter_num_38.h"
 #include "fonts/inter_num_48.h"
 #include "fonts/inter_num_68.h"
-#endif
 
 static FontID currentFont = FONT_NONE;
 
@@ -59,19 +62,17 @@ void setFont(lgfx::LovyanGFX& gfx, FontID id) {
             if (!gfx.loadFont(inter_19)) applyBitmapFallback(gfx, FONT_LARGE);
 #endif
             break;
+        case FONT_NUM_M:
+            if (!gfx.loadFont(inter_num_30)) applyBitmapFallback(gfx, FONT_XLARGE);
+            break;
+        case FONT_NUM_L:
+            if (!gfx.loadFont(inter_num_38)) applyBitmapFallback(gfx, FONT_XLARGE);
+            break;
         case FONT_NUM_XL:
-#if defined(DISPLAY_320x480)
             if (!gfx.loadFont(inter_num_48)) applyBitmapFallback(gfx, FONT_XLARGE);
-#else
-            if (!gfx.loadFont(inter_19)) applyBitmapFallback(gfx, FONT_LARGE);
-#endif
             break;
         case FONT_NUM_XXL:
-#if defined(DISPLAY_320x480)
             if (!gfx.loadFont(inter_num_68)) applyBitmapFallback(gfx, FONT_XLARGE);
-#else
-            if (!gfx.loadFont(inter_19)) applyBitmapFallback(gfx, FONT_LARGE);
-#endif
             break;
         case FONT_7SEG:
             gfx.unloadFont();

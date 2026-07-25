@@ -385,13 +385,6 @@ static FontID fitFontForWidth(const char* s, int16_t maxW, FontID base) {
   return steps[i];
 }
 
-// Scale the already-selected VLW font up when the cell offers the room - the
-// biggest bundled face is Inter 19pt, which reads small on a cell that holds
-// only a few metrics. Quarter steps: the coarse 2/1.5/1 ladder left up to 15%
-// of a band's height unused whenever 1.5x just missed. Digits have no
-// descenders, so scaled values stay inside the box. Leaves the chosen size
-// ACTIVE (caller resets with tft.setTextSize(1.0f) after drawing) and returns
-// it so the caller can re-apply the same size after probing other fonts.
 // True when the canvas is materially bigger than the 240-wide square panels -
 // i.e. the 320x480 Guition in either orientation (min dimension 320), never a
 // 240x240 or 240x320 board. Every layout change made for the big panel hangs
@@ -402,40 +395,54 @@ static inline bool largeCanvas(int16_t w, int16_t h) {
 }
 
 // Pick the largest value face that fits natively, with NO setTextSize()
-// magnification. Used on the large canvas in place of the
-// fitFontForWidth + scaleValueToCell pair: magnifying a VLW glyph stretches its
-// 8-bit alpha ramp and looks blurry, and the two digits-only faces give real
-// 48px/68px glyphs instead. Constrains height as well as width, so a value can
-// only grow into vertical room the cell actually has.
+// magnification. Replaces the old fitFontForWidth + scaleValueToCell pair on
+// every board: magnifying a VLW glyph stretches its 8-bit alpha ramp and looks
+// blurry (up to 2x on the 240x240 panels, which is where it was worst), and the
+// digits-only faces give real 30/38/48/68px glyphs instead. Constrains height as
+// well as width, so a value only grows into room the cell actually has - which
+// is what makes one ladder serve every panel size and metric count.
 //
-// DIGITS ONLY at the top two rungs - callers must pass a probe/value string
+// DIGITS ONLY at the top four rungs - callers must pass a probe/value string
 // from formatMetricText() or slotProbe(), never a label or unit.
+// Takes the target explicitly so the sprite-composed faces can use it too.
 // Leaves the chosen font ACTIVE at size 1.0 and returns it.
-static FontID fitValueFont(const char* s, int16_t maxW, int16_t maxH) {
+//
+// The height test measures what the digits actually ink, not fontHeight():
+// fontHeight is ascent + descent, and formatMetricText() output has no
+// descenders, so a fixed ~21% of that box is empty on every face in the ladder
+// (Inter's descent is a stable fraction of its line box, 0.20-0.21 from 20px to
+// 83px). Testing the full box rejects faces whose digits fit comfortably, which
+// costs a whole rung on the short bands a 240x240 panel produces.
+static inline int16_t digitInkHeight(int16_t fontHeight) {
+  return (int16_t)((fontHeight * 79) / 100);
+}
+
+// Baseline for a value fitted by fitValueFont, given the band below the label.
+// Centers the glyph box in the band, but never lets the box bottom drop past
+// the band: a face whose reported height overflows is one whose empty descent
+// hangs below the digits, and the band is the only region the value may paint.
+static inline int16_t valueBaseline(int16_t gapY, int16_t band, int16_t fh) {
+  const int16_t baseY = gapY + (band + fh) / 2;
+  return (baseY > gapY + band) ? (int16_t)(gapY + band) : baseY;
+}
+
+static FontID fitValueFont(lgfx::LovyanGFX& gfx, const char* s,
+                           int16_t maxW, int16_t maxH) {
   static const FontID ladder[] = {
-    FONT_NUM_XXL, FONT_NUM_XL, FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL
+    FONT_NUM_XXL, FONT_NUM_XL, FONT_NUM_L, FONT_NUM_M,
+    FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL
   };
   const uint8_t last = (uint8_t)(sizeof(ladder) / sizeof(ladder[0]) - 1);
-  tft.setTextSize(1.0f);
+  gfx.setTextSize(1.0f);
   for (uint8_t i = 0; i < last; i++) {
-    setFont(tft, ladder[i]);
-    if ((int16_t)tft.textWidth(s) <= maxW &&
-        (int16_t)tft.fontHeight() <= maxH) {
+    setFont(gfx, ladder[i]);
+    if ((int16_t)gfx.textWidth(s) <= maxW &&
+        digitInkHeight((int16_t)gfx.fontHeight()) <= maxH) {
       return ladder[i];
     }
   }
-  setFont(tft, ladder[last]);
+  setFont(gfx, ladder[last]);
   return ladder[last];
-}
-
-static float scaleValueToCell(const char* s, int16_t maxW, int16_t maxH) {
-  static const float scales[] = { 2.0f, 1.75f, 1.5f, 1.25f, 1.0f };
-  for (float sc : scales) {
-    tft.setTextSize(sc);
-    if (tft.fontHeight() <= maxH && tft.textWidth(s) <= maxW) return sc;
-  }
-  tft.setTextSize(1.0f);
-  return 1.0f;
 }
 
 // Upgrade the unit face beside a fitted value. The value is always fitted
@@ -589,15 +596,19 @@ static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
 //  no longer covers get cleared - painting bg over bg is invisible, so the
 //  only pixels that visibly change are the ones that actually changed.
 // ---------------------------------------------------------------------------
-// Left-aligned value + a small dim unit centered against the value height.
-// Caller has already selected the value font (fitFontForWidth +
-// scaleValueToCell); resets the text size to 1.0 itself. bandH covers the
-// tallest glyph box a previous draw may have used.
+// Left-aligned value + a small dim unit set against the value height.
+// Caller has already selected the value font (fitValueFont); resets the text
+// size to 1.0 itself. bandH covers the tallest glyph box a previous draw may
+// have used.
 static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t bandH,
                              const char* val, const char* unit,
                              uint16_t fg, uint16_t bg, int16_t* prevVw,
                              FontID unitFont = FONT_SMALL) {
   const int16_t fh = (int16_t)tft.fontHeight();
+  // A face can report more height than the band holds - its descent is empty
+  // for digits, which is why fitValueFont let it through. Clip every clear to
+  // the band so the region never paints over the label above it.
+  const int16_t boxH = (fh > bandH) ? bandH : fh;
   tft.setTextDatum(BL_DATUM);
   tft.setTextColor(fg, bg);
   tft.drawString(val, x, baseY);
@@ -606,7 +617,7 @@ static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t ba
   // The band above the glyph box is background whenever the region is
   // healthy, so repainting it is invisible - and it evicts stale pixels left
   // by an earlier taller font or a layout that once painted there.
-  if (bandH > fh) tft.fillRect(x, baseY - bandH, bandW, bandH - fh, bg);
+  if (bandH > boxH) tft.fillRect(x, baseY - bandH, bandW, bandH - boxH, bg);
   // The unit and the vacated-pixel clears only need repainting when the
   // value's glyph box changed - doing it every update made the unit blink at
   // the packet rate. The key folds in the font height so a font change with
@@ -614,17 +625,20 @@ static void drawValueRegionL(int16_t x, int16_t baseY, int16_t bandW, int16_t ba
   // prevVw==nullptr forces a full repaint without touching state (capture).
   const int16_t key = (int16_t)(uint16_t)((vw & 0x01FF) | ((fh & 0x7F) << 9));
   if (prevVw && *prevVw == key) return;
-  if (bandW > vw) tft.fillRect(x + vw, baseY - fh, bandW - vw, fh, bg);
+  if (bandW > vw) tft.fillRect(x + vw, baseY - boxH, bandW - vw, boxH, bg);
   if (unit && unit[0]) {
     setFont(tft, unitFont);
     const int16_t unitFh = (int16_t)tft.fontHeight();
     // Centering the unit against the glyph box reads fine when the two faces
-    // are close in size, but the large canvas puts a 48/68px value next to it
-    // and a floating mid-height unit looks detached. Sit it on the value's
-    // baseline there, the way "15 %" is normally set.
-    const int16_t unitBaseY = largeCanvas((int16_t)tft.width(), (int16_t)tft.height())
-                                ? baseY
-                                : baseY - (fh - unitFh) / 2;
+    // are close in size, but a floating mid-height unit looks detached once the
+    // value towers over it. Sit it on the value's baseline then, the way "15 %"
+    // is normally set. The large canvas always does this (it never renders a
+    // small value here); the square panels now reach 38-59px values too, so
+    // they get the same treatment whenever the gap is wide.
+    const bool baselineUnit =
+        largeCanvas((int16_t)tft.width(), (int16_t)tft.height()) ||
+        (fh - unitFh) >= 16;
+    const int16_t unitBaseY = baselineUnit ? baseY : baseY - (fh - unitFh) / 2;
     tft.setTextDatum(BL_DATUM);
     tft.setTextColor(themeSettings.secondaryColor, bg);
     tft.drawString(unit, x + vw + 5, unitBaseY);
@@ -738,12 +752,12 @@ static void drawBigNumbersScreen(bool fr) {
     const int16_t lfh = (int16_t)tft.fontHeight();
     tft.fillRect(x + padX + lw, labelY, cellW - 2 * padX - lw, lfh, bg);
 
-    // Value (bottom-left, above the meter) + dim unit after it. The value
-    // scales up in tall cells, so fewer bound metrics = bigger digits.
-    // Reserve the unit at its FINAL size before fitting the value. The old
-    // path measured it at FONT_SMALL and then tried to upgrade it from
-    // leftover slack, but a 48/68px value leaves no slack, so the unit stayed
-    // 10px and looked lost beside the digits.
+    // Value (bottom-left, above the meter) + dim unit after it. The face grows
+    // with the cell, so fewer bound metrics = bigger digits.
+    // On the big canvas the unit is reserved at its FINAL size before fitting
+    // the value: the small canvas can still measure it at FONT_SMALL and
+    // upgrade it from leftover slack, but a 48/68px value leaves no slack, so
+    // the unit stayed 10px and looked lost beside the digits.
     if (big) setFont(tft, FONT_XLARGE);
     const int16_t unitW = tft.textWidth(text.unit);
     const int16_t gapY = labelY + lfh;
@@ -752,41 +766,21 @@ static void drawBigNumbersScreen(bool fr) {
     char probe[12];
     slotProbe(s, m, probe, sizeof(probe));
 
-    int16_t baseY, bandH;
-    FontID vf;
-    float vs;
-    if (big) {
-      // Native oversized face, no setTextSize() magnification, then center the
-      // glyph box in the space between the label and the meter. The old fixed
-      // bottom offset left an obvious void under the label once cells got to
-      // ~160px tall. bandH is pinned to (baseY - gapY) so the vacated-pixel
-      // clear inside drawValueRegionL covers exactly that void and can never
-      // reach up into the label.
-      const int16_t band = meterTop - 6 - gapY;
-      vf = fitValueFont(probe, availW, band);
-      vs = 1.0f;
-      const int16_t fh = (int16_t)tft.fontHeight();
-      baseY = gapY + (band + fh) / 2;
-      bandH = baseY - gapY;
-    } else {
-      baseY = y + cellH - (roomy ? 20 : 12);
-      bandH = cellH - (roomy ? 44 : 30);
-      // Strip between the label bottom and the value band self-heals the same
-      // way the hero head does: background repaint, invisible when healthy.
-      if (baseY - bandH > gapY)
-        tft.fillRect(x + padX, gapY, cellW - 2 * padX, baseY - bandH - gapY, bg);
-      vf = fitFontForWidth(probe, availW,
-                           (cellH >= 64) ? FONT_XLARGE : FONT_LARGE);
-      vs = scaleValueToCell(probe, availW, bandH);
-    }
+    // Native face, no setTextSize() magnification, then center the glyph box in
+    // the space between the label and the meter. A fixed bottom offset left an
+    // obvious void under the label once cells got tall. bandH is pinned to
+    // (baseY - gapY) so the vacated-pixel clear inside drawValueRegionL covers
+    // exactly that void and can never reach up into the label.
+    const int16_t band = meterTop - 6 - gapY;
+    const FontID vf = fitValueFont(tft, probe, availW, band);
     const int16_t valueFh = (int16_t)tft.fontHeight();
+    const int16_t baseY = valueBaseline(gapY, band, valueFh);
+    const int16_t bandH = baseY - gapY;
     const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
-    tft.setTextSize(1.0f);
     // Keep the unit a clear step below the value so it stays subordinate.
     const FontID uf = big ? ((valueFh >= 60) ? FONT_XLARGE : FONT_LARGE)
                           : upgradeUnitFont(text.unit, slackW, valueFh, unitW);
     setFont(tft, vf);
-    tft.setTextSize(vs);
     static int16_t prevVw[NUM_GAUGE_SLOTS];
     if (fr && !gCaptureRender) prevVw[vis[i].slotIdx] = -1;
     drawValueRegionL(x + padX, baseY, cellW - 2 * padX, bandH,
@@ -1016,8 +1010,6 @@ static void drawHeroScreen(bool fr) {
   // Anchor off-grid (3, heroH) so it can never collide with a row anchor.
   if (gaugeTextChanged(3, heroH, key, heroLabel, fr)) {
     const int16_t heroW = (n >= 2) ? (w / 2) : w;
-    int16_t baseY = heroH - 12;
-    int16_t bandH = heroH - 36;
 
     setFont(tft, FONT_SMALL);
     tft.setTextDatum(TL_DATUM);
@@ -1031,37 +1023,24 @@ static void drawHeroScreen(bool fr) {
     // left by an earlier layout or screen.
     const int16_t gapY = 8 + lfh;
 
-    // Unit reserved at final size - see the big-numbers cells.
+    // Unit reserved at final size on the big canvas - see the big-numbers cells.
     if (big) setFont(tft, FONT_XLARGE);
     const int16_t unitW = tft.textWidth(heroText.unit);
     const int16_t availW = heroW - 24 - unitW - 6;
     char probe[12];
     slotProbe(hs, hm, probe, sizeof(probe));
-    FontID vf;
-    float vs;
-    if (big) {
-      // Native oversized face + glyph box centered in the band under the
-      // label, same treatment as the big-numbers cells. bandH is pinned to
-      // (baseY - gapY) so drawValueRegionL's clear stops below the label.
-      const int16_t band = heroH - 12 - gapY;
-      vf = fitValueFont(probe, availW, band);
-      vs = 1.0f;
-      const int16_t fh = (int16_t)tft.fontHeight();
-      baseY = gapY + (band + fh) / 2;
-      bandH = baseY - gapY;
-    } else {
-      if (baseY - bandH > gapY)
-        tft.fillRect(12, gapY, heroW - 24, baseY - bandH - gapY, bg);
-      vf = fitFontForWidth(probe, availW, FONT_XLARGE);
-      vs = scaleValueToCell(probe, availW, bandH);
-    }
+    // Native face + glyph box centered in the band under the label, same
+    // treatment as the big-numbers cells. bandH is pinned to (baseY - gapY) so
+    // drawValueRegionL's clear stops below the label.
+    const int16_t band = heroH - 12 - gapY;
+    const FontID vf = fitValueFont(tft, probe, availW, band);
     const int16_t valueFh = (int16_t)tft.fontHeight();
+    const int16_t baseY = valueBaseline(gapY, band, valueFh);
+    const int16_t bandH = baseY - gapY;
     const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
-    tft.setTextSize(1.0f);
     const FontID uf = big ? ((valueFh >= 60) ? FONT_XLARGE : FONT_LARGE)
                           : upgradeUnitFont(heroText.unit, slackW, valueFh, unitW);
     setFont(tft, vf);
-    tft.setTextSize(vs);
     static int16_t heroPrevVw = -1;
     if (fr && !gCaptureRender) heroPrevVw = -1;
     drawValueRegionL(12, baseY, heroW - 24, bandH,
@@ -1328,8 +1307,6 @@ static void drawDuoScreen(bool fr) {
       // margin - together with the quarter scale steps this is what lets a
       // four-digit RPM reading render a full step larger.
       const int16_t valueW = (n == 1) ? w : chartX;
-      int16_t baseY = y + bandH - 8;
-      int16_t bandV = bandH - 30;
 
       setFont(tft, FONT_SMALL);
       tft.setTextDatum(TL_DATUM);
@@ -1340,36 +1317,23 @@ static void drawDuoScreen(bool fr) {
       tft.fillRect(10 + lw, y + 6, valueW - 14 - lw, lfh, bg);
       const int16_t gapY = y + 6 + lfh;
 
-      // Unit reserved at final size - see the big-numbers cells.
+      // Unit reserved at final size on the big canvas - see the big-numbers cells.
       if (big) setFont(tft, FONT_XLARGE);
       const int16_t unitW = tft.textWidth(text.unit);
       const int16_t availW = valueW - 14 - unitW - 5;
       char probe[12];
       slotProbe(s, m, probe, sizeof(probe));
-      FontID vf;
-      float vs;
-      if (big) {
-        // Native oversized face, box centered under the label. See the
-        // big-numbers cells for why bandV is pinned to (baseY - gapY).
-        const int16_t band = (y + bandH - 8) - gapY;
-        vf = fitValueFont(probe, availW, band);
-        vs = 1.0f;
-        const int16_t fh = (int16_t)tft.fontHeight();
-        baseY = gapY + (band + fh) / 2;
-        bandV = baseY - gapY;
-      } else {
-        if (baseY - bandV > gapY)
-          tft.fillRect(10, gapY, valueW - 14, baseY - bandV - gapY, bg);
-        vf = fitFontForWidth(probe, availW, FONT_XLARGE);
-        vs = scaleValueToCell(probe, availW, bandV);
-      }
+      // Native face, box centered under the label. See the big-numbers cells
+      // for why bandV is pinned to (baseY - gapY).
+      const int16_t band = (y + bandH - 8) - gapY;
+      const FontID vf = fitValueFont(tft, probe, availW, band);
       const int16_t valueFh = (int16_t)tft.fontHeight();
+      const int16_t baseY = valueBaseline(gapY, band, valueFh);
+      const int16_t bandV = baseY - gapY;
       const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
-      tft.setTextSize(1.0f);
       const FontID uf = big ? ((valueFh >= 60) ? FONT_XLARGE : FONT_LARGE)
                             : upgradeUnitFont(text.unit, slackW, valueFh, unitW);
       setFont(tft, vf);
-      tft.setTextSize(vs);
       static int16_t bandPrevVw[2] = { -1, -1 };
       if (fr && !gCaptureRender) bandPrevVw[b] = -1;
       drawValueRegionL(10, baseY, valueW - 14, bandV,
@@ -1551,43 +1515,13 @@ static void drawPulseScreen(bool fr) {
       if (big) setFont(blockSpr, FONT_XLARGE);
       const int16_t unitW = blockSpr.textWidth(text.unit);
       const int16_t maxW = blockW - 18 - unitW - 5;
-      int16_t valueBaseY = blockH - 8;
-      if (big) {
-        // Native oversized digits instead of a magnified 26px glyph, and the
-        // box centered between the label and the block bottom. Same rationale
-        // as fitValueFont, reimplemented here because this face composes into
-        // a sprite rather than onto `tft`.
-        static const FontID ladder[] = {
-          FONT_NUM_XXL, FONT_NUM_XL, FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL
-        };
-        const int16_t band = (blockH - 8) - labelBot;
-        blockSpr.setTextSize(1.0f);
-        uint8_t li = 0;
-        for (; li < 5; li++) {
-          setFont(blockSpr, ladder[li]);
-          if ((int16_t)blockSpr.textWidth(probe) <= maxW &&
-              (int16_t)blockSpr.fontHeight() <= band) break;
-        }
-        if (li >= 5) setFont(blockSpr, ladder[5]);
-        const int16_t fh = (int16_t)blockSpr.fontHeight();
-        valueBaseY = labelBot + (band + fh) / 2;
-      } else {
-        static const FontID steps[] = { FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL };
-        uint8_t fi = 0;
-        setFont(blockSpr, steps[fi]);
-        while (fi < 3 && blockSpr.textWidth(probe) > maxW) setFont(blockSpr, steps[++fi]);
-        // Scale up when the block allows it - fewer metrics, bigger digits.
-        float sc = 1.0f;
-        const int16_t maxH = blockH - 30;
-        for (float trySc : { 2.0f, 1.5f }) {
-          blockSpr.setTextSize(trySc);
-          if (blockSpr.fontHeight() <= maxH && blockSpr.textWidth(probe) <= maxW) {
-            sc = trySc;
-            break;
-          }
-        }
-        blockSpr.setTextSize(sc);
-      }
+      // Native digits instead of a magnified glyph, box centered between the
+      // label and the block bottom - the same treatment the other faces get,
+      // applied to the sprite this one composes into.
+      const int16_t band = (blockH - 8) - labelBot;
+      fitValueFont(blockSpr, probe, maxW, band);
+      const int16_t valueBaseY =
+          valueBaseline(labelBot, band, (int16_t)blockSpr.fontHeight());
       blockSpr.setTextDatum(BL_DATUM);
       blockSpr.setTextColor(textC, cellBg);
       blockSpr.drawString(text.value, 9, valueBaseY);
