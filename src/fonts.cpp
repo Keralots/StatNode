@@ -12,6 +12,10 @@
 // can render larger on the bigger canvas. Excluded from other boards to
 // keep the C3 / S3 Mini flash footprints unchanged.
 #include "fonts/inter_22.h"
+// Plus two digits-only value faces (~11 KB + ~21 KB) so the tall cells on this
+// panel can render big numbers natively instead of magnifying a 26px glyph.
+#include "fonts/inter_num_48.h"
+#include "fonts/inter_num_68.h"
 #endif
 
 static FontID currentFont = FONT_NONE;
@@ -52,6 +56,20 @@ void setFont(lgfx::LovyanGFX& gfx, FontID id) {
             if (!gfx.loadFont(inter_22)) applyBitmapFallback(gfx, FONT_XLARGE);
 #else
             // Font blob not linked on this board - fall back to FONT_LARGE.
+            if (!gfx.loadFont(inter_19)) applyBitmapFallback(gfx, FONT_LARGE);
+#endif
+            break;
+        case FONT_NUM_XL:
+#if defined(DISPLAY_320x480)
+            if (!gfx.loadFont(inter_num_48)) applyBitmapFallback(gfx, FONT_XLARGE);
+#else
+            if (!gfx.loadFont(inter_19)) applyBitmapFallback(gfx, FONT_LARGE);
+#endif
+            break;
+        case FONT_NUM_XXL:
+#if defined(DISPLAY_320x480)
+            if (!gfx.loadFont(inter_num_68)) applyBitmapFallback(gfx, FONT_XLARGE);
+#else
             if (!gfx.loadFont(inter_19)) applyBitmapFallback(gfx, FONT_LARGE);
 #endif
             break;
