@@ -65,7 +65,7 @@ static void recordAction(const char* action) {
 }
 
 static void cycleStyle(int8_t direction) {
-  uint8_t mask = touchSettings.styleMask & STYLE_ACTIVE_MASK;
+  uint16_t mask = touchSettings.styleMask & STYLE_ACTIVE_MASK;
   if (mask == 0) mask = 1u << STYLE_DEFAULT;
 
   for (uint8_t step = 1; step <= STYLE_COUNT; step++) {

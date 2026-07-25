@@ -486,49 +486,56 @@ static void drawMeterBar(int16_t x, int16_t y, int16_t w, int16_t h,
 // Chart core shared by the sparkline path and the strips lanes: smoothed
 // bounds plus the column-wise area/line render, drawn into any target (panel
 // or a compose sprite) at the given offset. The caller owns the background.
+// Smoothed per-slot chart bounds, shared by the flat sparkline and the glass
+// chart so switching faces never rescales a series differently. Expands to the
+// window immediately (a new extreme must be visible at once) and contracts
+// slowly (5% per redraw), so the chart does not rescale-jump every time an
+// extreme leaves the ring. Returns false when there is nothing to plot yet.
+static bool sparkBounds(const SlotHistory& hist, uint8_t slotIdx, bool advance,
+                        float& lo, float& hi) {
+  if (hist.count < 2) return false;
+  float wlo = pcHistoryAt(hist, 0), whi = wlo;
+  for (uint8_t i = 1; i < hist.count; i++) {
+    float v = pcHistoryAt(hist, i);
+    if (v < wlo) wlo = v;
+    if (v > whi) whi = v;
+  }
+  float pad = (whi - wlo) * 0.15f;
+  if (pad < 0.5f) pad = 0.5f;
+  wlo -= pad;
+  whi += pad;
+
+  static float sLo[NUM_GAUGE_SLOTS], sHi[NUM_GAUGE_SLOTS];
+  static uint8_t sInit = 0;
+  const uint8_t bit = (uint8_t)(1u << slotIdx);
+  if (gCaptureRender) {
+    lo = (sInit & bit) ? sLo[slotIdx] : wlo;
+    hi = (sInit & bit) ? sHi[slotIdx] : whi;
+    return true;
+  }
+  // Mutate the smoothed bounds only when a new sample arrived - a plain full
+  // redraw (portal preview cycle) must reproduce identical pixels, otherwise
+  // the chart creeps every 4 s while the preview is open.
+  if (hist.count <= 2 || !(sInit & bit)) {
+    sLo[slotIdx] = wlo;
+    sHi[slotIdx] = whi;
+    sInit |= bit;
+  } else if (advance) {
+    if (wlo < sLo[slotIdx]) sLo[slotIdx] = wlo;
+    else sLo[slotIdx] += (wlo - sLo[slotIdx]) * 0.05f;
+    if (whi > sHi[slotIdx]) sHi[slotIdx] = whi;
+    else sHi[slotIdx] += (whi - sHi[slotIdx]) * 0.05f;
+  }
+  lo = sLo[slotIdx];
+  hi = sHi[slotIdx];
+  return true;
+}
+
 static void sparkPlot(lgfx::LovyanGFX& g, const SlotHistory& hist,
                       uint8_t slotIdx, int16_t ox, int16_t oy,
                       int16_t w, int16_t h, uint16_t color, bool advance) {
-  if (hist.count >= 2) {
-    float wlo = pcHistoryAt(hist, 0), whi = wlo;
-    for (uint8_t i = 1; i < hist.count; i++) {
-      float v = pcHistoryAt(hist, i);
-      if (v < wlo) wlo = v;
-      if (v > whi) whi = v;
-    }
-    float pad = (whi - wlo) * 0.15f;
-    if (pad < 0.5f) pad = 0.5f;
-    wlo -= pad;
-    whi += pad;
-
-    // Smoothed per-slot bounds: expand to the window immediately (a new
-    // extreme must be visible at once), contract slowly (5% per redraw), so
-    // the chart does not rescale-jump every time an extreme leaves the ring.
-    static float sLo[NUM_GAUGE_SLOTS], sHi[NUM_GAUGE_SLOTS];
-    static uint8_t sInit = 0;
-    const uint8_t bit = (uint8_t)(1u << slotIdx);
-    float lo, hi;
-    if (gCaptureRender) {
-      lo = (sInit & bit) ? sLo[slotIdx] : wlo;
-      hi = (sInit & bit) ? sHi[slotIdx] : whi;
-    } else {
-      // Mutate the smoothed bounds only when a new sample arrived - a plain
-      // full redraw (portal preview cycle) must reproduce identical pixels,
-      // otherwise the chart creeps every 4 s while the preview is open.
-      if (hist.count <= 2 || !(sInit & bit)) {
-        sLo[slotIdx] = wlo;
-        sHi[slotIdx] = whi;
-        sInit |= bit;
-      } else if (advance) {
-        if (wlo < sLo[slotIdx]) sLo[slotIdx] = wlo;
-        else sLo[slotIdx] += (wlo - sLo[slotIdx]) * 0.05f;
-        if (whi > sHi[slotIdx]) sHi[slotIdx] = whi;
-        else sHi[slotIdx] += (whi - sHi[slotIdx]) * 0.05f;
-      }
-      lo = sLo[slotIdx];
-      hi = sHi[slotIdx];
-    }
-
+  float lo, hi;
+  if (sparkBounds(hist, slotIdx, advance, lo, hi)) {
     // Column-wise render: a dim area fill under a 2px connected line. A bare
     // 1px polyline disappears on the physical panel wherever the series goes
     // flat near the box edge; the filled area keeps the shape readable.
@@ -630,6 +637,552 @@ static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
 }
 
 // ---------------------------------------------------------------------------
+//  GLASS SURFACE KIT  (STYLE_GLASS_TILES / STYLE_GLASS_DUO)
+//
+//  Real glass wants a blurred backdrop and this panel has no framebuffer to
+//  blur. It does not need one: a smooth vertical gradient, blurred, is still
+//  itself. So the wallpaper behind the glass is a gradient the firmware
+//  generates, which makes the "backdrop blur" exact rather than approximate -
+//  and makes every pane colour a pure function of the panel row, so a pane can
+//  be composed in sprite-sized pieces that join seamlessly and never has to
+//  read the panel back.
+//
+//  Three rules hold the whole thing together:
+//   1. The backdrop is vertical-only. A diagonal one would look better and
+//      would cost a per-pixel evaluation instead of one value per row.
+//   2. Compositing happens at 8 bits per channel and is dithered on the way
+//      down to RGB565. Blending in 565 space bands badly - a 240-row ramp
+//      crosses at most 32 blue levels, so straight truncation lays down
+//      visible horizontal stripes.
+//   3. Nothing direct-draws onto glass. The "clear the vacated pixels to
+//      bgColor" trick the flat faces use dies the moment bgColor stops being
+//      one colour, so every region that updates is composed and blitted whole.
+// ---------------------------------------------------------------------------
+
+// Working colour space for the compositor. int16_t rather than uint8_t so an
+// intermediate blend can overshoot without wrapping.
+struct Rgb { int16_t r, g, b; };
+
+static inline Rgb rgbFrom565(uint16_t c) {
+  return Rgb{ (int16_t)((((c >> 11) & 0x1F) * 255 + 15) / 31),
+              (int16_t)((((c >> 5) & 0x3F) * 255 + 31) / 63),
+              (int16_t)(((c & 0x1F) * 255 + 15) / 31) };
+}
+
+// alpha is the weight of b, 0..255.
+static inline Rgb rgbMix(const Rgb& a, const Rgb& b, uint8_t alpha) {
+  return Rgb{ (int16_t)(a.r + (((int32_t)b.r - a.r) * alpha >> 8)),
+              (int16_t)(a.g + (((int32_t)b.g - a.g) * alpha >> 8)),
+              (int16_t)(a.b + (((int32_t)b.b - a.b) * alpha >> 8)) };
+}
+
+static const Rgb RGB_WHITE = { 255, 255, 255 };
+static const Rgb RGB_BLACK = { 0, 0, 0 };
+
+// 8x8 ordered dither, applied at the 8888 -> 565 store so a long ramp turns
+// its band edges into a stipple the eye integrates back into a smooth
+// gradient. Without it the backdrop shows every one of its ~32 blue steps.
+//
+// 8x8 rather than 4x4: both kill the banding, but a 4x4 cell at this pixel
+// pitch reads as a visible checkerboard on the panel. The threshold is also
+// CENTRED (-32..31) instead of added, so dithering does not lift the whole
+// image half a quantisation step brighter.
+static const uint8_t kBayer8[64] = {
+   0, 32,  8, 40,  2, 34, 10, 42,
+  48, 16, 56, 24, 50, 18, 58, 26,
+  12, 44,  4, 36, 14, 46,  6, 38,
+  60, 28, 52, 20, 62, 30, 54, 22,
+   3, 35, 11, 43,  1, 33,  9, 41,
+  51, 19, 59, 27, 49, 17, 57, 25,
+  15, 47,  7, 39, 13, 45,  5, 37,
+  63, 31, 55, 23, 61, 29, 53, 21
+};
+
+static inline uint16_t rgbTo565(const Rgb& c, int16_t x, int16_t y) {
+  const int32_t t = (int32_t)kBayer8[((y & 7) << 3) | (x & 7)] - 32;
+  // One quantisation step of spread: the 5-bit channels step by 8, the 6-bit
+  // green by 4. Any more is noise, any less leaves the band edge visible.
+  int32_t r = c.r + (t >> 3);
+  int32_t g = c.g + (t >> 4);
+  int32_t b = c.b + (t >> 3);
+  if (r < 0) r = 0; else if (r > 255) r = 255;
+  if (g < 0) g = 0; else if (g > 255) g = 255;
+  if (b < 0) b = 0; else if (b > 255) b = 255;
+  return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+}
+
+// Compose target. Writing straight into a sprite's buffer instead of going
+// through drawPixel is what makes a fully per-pixel glass face affordable on
+// the C3, which has no FPU and pays for every call. buf == nullptr falls back
+// to the generic path so the no-sprite case still renders.
+struct GlassCanvas {
+  lgfx::LovyanGFX* g;
+  uint16_t* buf;
+  int32_t stride;
+  int16_t w, h;
+  int16_t ox, oy;      // where this canvas sits, for the generic path
+};
+
+// LovyanGFX keeps 16-bit sprite pixels in the PANEL's byte order (swap565 on
+// every SPI panel here), and writing the buffer directly bypasses the
+// conversion the drawing API would do - which comes out as scrambled hues, not
+// as a subtle shift. Probe once with an asymmetric colour instead of assuming
+// an order: the answer differs by panel driver, and guessing wrong is silent.
+static int8_t gGlassSwap = -1;   // -1 = not yet probed, 0 = native, 1 = swapped
+
+static void glassProbeByteOrder(lgfx::LGFX_Sprite& spr) {
+  if (gGlassSwap >= 0) return;
+  const uint16_t probe = 0xF800;            // pure red: 0x00F8 once swapped
+  spr.drawPixel(0, 0, probe);
+  gGlassSwap = (((const uint16_t*)spr.getBuffer())[0] == probe) ? 0 : 1;
+}
+
+static GlassCanvas glassCanvasFor(lgfx::LovyanGFX& g, lgfx::LGFX_Sprite* spr,
+                                  int16_t ox, int16_t oy) {
+  GlassCanvas c;
+  c.g = &g;
+  c.buf = nullptr;
+  c.stride = 0;
+  c.w = (int16_t)g.width();
+  c.h = (int16_t)g.height();
+  c.ox = ox;
+  c.oy = oy;
+  if (spr && (int)spr->getColorDepth() == 16 && spr->getBuffer()) {
+    glassProbeByteOrder(*spr);
+    c.buf = (uint16_t*)spr->getBuffer();
+    c.stride = (int32_t)spr->width();
+  }
+  return c;
+}
+
+static inline void gcPixel(const GlassCanvas& c, int16_t x, int16_t y, uint16_t v) {
+  const int16_t px = x + c.ox, py = y + c.oy;
+  if (px < 0 || py < 0 || px >= c.w || py >= c.h) return;
+  if (c.buf) c.buf[(int32_t)py * c.stride + px] = gGlassSwap ? __builtin_bswap16(v) : v;
+  else c.g->drawPixel(px, py, v);
+}
+
+// --- the backdrop -----------------------------------------------------------
+
+// Widest panel this firmware targets (the 320x480 Guition in landscape).
+static const int16_t GLASS_ROW_MAX = 480;
+
+struct GlassSky {
+  Rgb top, mid, bot;
+  int16_t h;
+};
+static GlassSky gSky;
+
+// Derived from the user's bgColor so the Colors card still means something:
+// the ramp is that colour lifted toward a cool slate at the top and sunk
+// toward black at the bottom, never a hardcoded palette.
+static void glassSkyInit(int16_t h, const Rgb& tint,
+                         uint8_t topA, uint8_t midA, uint8_t botA) {
+  const Rgb base = rgbFrom565(dispSettings.bgColor);
+  gSky.top = rgbMix(base, tint, topA);
+  gSky.mid = rgbMix(base, tint, midA);
+  gSky.bot = rgbMix(base, RGB_BLACK, botA);
+  gSky.h = h > 1 ? h : 1;
+}
+
+// Two-segment ramp: the knee at 55% keeps the upper half bright enough for the
+// panes to read as sitting ON something while the floor still goes properly
+// dark behind the lowest cards.
+static inline Rgb glassSkyAt(int16_t y) {
+  if (y < 0) y = 0;
+  if (y >= gSky.h) y = gSky.h - 1;
+  const int32_t knee = ((int32_t)gSky.h * 55) / 100;
+  if (y <= knee) {
+    const uint8_t a = knee ? (uint8_t)(((int32_t)y * 255) / knee) : 0;
+    return rgbMix(gSky.top, gSky.mid, a);
+  }
+  const int32_t span = gSky.h - 1 - knee;
+  const uint8_t a = span > 0 ? (uint8_t)((((int32_t)y - knee) * 255) / span) : 255;
+  return rgbMix(gSky.mid, gSky.bot, a);
+}
+
+// One dithered row at a time, pushed as an image. drawFastHLine would be one
+// call per row and would band; per-pixel drawPixel would be 57600 windowed SPI
+// writes and take seconds. Composing the row in RAM and blitting it is both
+// smooth and fast.
+static void glassBackdrop(int16_t w, int16_t h) {
+  static uint16_t row[GLASS_ROW_MAX];
+  if (w > GLASS_ROW_MAX) w = GLASS_ROW_MAX;
+  RendererWrite rw(tft);
+  // row[] holds native-order RGB565, and pushImage's flag means "swap this
+  // source into the panel's order" - which these swap565 panels need. Setting
+  // it false publishes the row as already-panel-order and scrambles every hue
+  // (measured: a #19AA navy backdrop came back as #AA19 magenta).
+  const bool prevSwap = tft.getSwapBytes();
+  tft.setSwapBytes(true);
+  for (int16_t y = 0; y < h; y++) {
+    const Rgb c = glassSkyAt(y);
+    for (int16_t x = 0; x < w; x++) row[x] = rgbTo565(c, x, y);
+    tft.pushImage(0, y, w, 1, row);
+  }
+  tft.setSwapBytes(prevSwap);
+}
+
+// --- pane -------------------------------------------------------------------
+
+struct GlassStyle {
+  uint8_t lift;      // pane body pulled toward white (the "smoke")
+  uint8_t tint;      // slot accent bled into the body
+  uint8_t bloom;     // accent glow rising off the bottom edge
+  uint8_t glossA;    // specular peak alpha, 0 = no gloss at all
+  uint8_t glossPct;  // specular band height as a % of pane height
+  uint8_t refract;   // rim samples the sky this many rows lower, 0 = off
+  uint8_t rimTop;
+  uint8_t rimSide;
+  int8_t  rimBot;    // > 0 lifts toward white, < 0 sinks toward black
+};
+
+// Vista: polished. A bright specular arc, a hard bevel underneath, warm bloom.
+static const GlassStyle GLASS_AERO = {
+  /*lift*/ 26, /*tint*/ 30, /*bloom*/ 30, /*glossA*/ 88, /*glossPct*/ 44,
+  /*refract*/ 0, /*rimTop*/ 120, /*rimSide*/ 34, /*rimBot*/ -76
+};
+// Modern: edge-lit, no gloss, light wrapping under the bottom edge.
+static const GlassStyle GLASS_LIQUID = {
+  /*lift*/ 30, /*tint*/ 26, /*bloom*/ 18, /*glossA*/ 0, /*glossPct*/ 0,
+  /*refract*/ 6, /*rimTop*/ 132, /*rimSide*/ 72, /*rimBot*/ 54
+};
+
+// Pane body colour for one row. Pure function of the panel row, which is what
+// lets two sprites compose adjacent slices of the same pane and join invisibly.
+static inline Rgb glassPaneRow(int16_t panelY, int16_t dy, int16_t paneH,
+                               const Rgb& accent, const GlassStyle& gs) {
+  Rgb c = rgbMix(glassSkyAt(panelY), RGB_WHITE, gs.lift);
+  c = rgbMix(c, accent, gs.tint);
+  if (gs.bloom && paneH > 1) {
+    const int32_t t = ((int32_t)dy * 255) / (paneH - 1);
+    if (t > 140) c = rgbMix(c, accent, (uint8_t)(((int32_t)gs.bloom * (t - 140)) / 115));
+  }
+  return c;
+}
+
+// Sub-pixel left inset of a rounded-rect row, in 1/256 px. The fractional part
+// is what removes the staircase from a 6px corner - an integer inset is
+// exactly the "sharp edges" problem at this radius.
+static int32_t glassInsetQ8(int16_t r, int16_t dy, int16_t paneH) {
+  if (r <= 0) return 0;
+  const int16_t d = (dy < paneH - 1 - dy) ? dy : (int16_t)(paneH - 1 - dy);
+  if (d >= r) return 0;
+  const float k = (float)r - ((float)d + 0.5f);
+  float s = (float)r * (float)r - k * k;
+  if (s < 0.0f) s = 0.0f;
+  const float ins = (float)r - sqrtf(s);
+  return (int32_t)(ins * 256.0f + 0.5f);
+}
+
+// Soft edge widths, in 1/256 px. Wide enough that the rim reads as a lit bevel
+// rather than a drawn outline.
+static const int32_t RIM_SIDE_Q8 = 384;   // 1.5 px
+static const int32_t RIM_VERT_Q8 = 448;   // 1.75 px
+
+// Compose a WINDOW of a glass pane. The window is [wx, wy, ww, wh] in
+// pane-local coordinates; the pane is paneW x paneH with corner radius r and
+// its top row sits at panel row paneY. Everything outside the rounded shape
+// gets the backdrop, so a window is self-contained and two adjacent windows
+// tile the pane exactly.
+// warnRim, when set, lights the pane's whole edge in the warning colour. The
+// alternative - retinting the pane body - is what made a slot crossing its
+// threshold look broken: the body went red while the chart inside kept its
+// identity hue, so the plot read as a mismatched rectangle stamped on the
+// card. Every other face here keeps the card its identity colour too.
+static void glassPaneWindow(const GlassCanvas& c,
+                            int16_t wx, int16_t wy, int16_t ww, int16_t wh,
+                            int16_t paneY, int16_t paneW, int16_t paneH,
+                            int16_t r, const Rgb& accent, const GlassStyle& gs,
+                            const Rgb* warnRim = nullptr) {
+  const int16_t glossH = gs.glossA ? (int16_t)(((int32_t)paneH * gs.glossPct) / 100) : 0;
+  const int32_t cxQ8 = ((int32_t)paneW << 8) / 2;
+
+  for (int16_t dy = wy; dy < wy + wh; dy++) {
+    const int16_t panelRow = paneY + dy;
+    const Rgb sky = glassSkyAt(panelRow);
+    const Rgb body = glassPaneRow(panelRow, dy, paneH, accent, gs);
+
+    const int32_t insQ8 = glassInsetQ8(r, dy, paneH);
+    const int32_t xlQ8 = insQ8;
+    const int32_t xrQ8 = ((int32_t)paneW << 8) - insQ8;
+
+    // Rim source: Liquid reads the backdrop from further down the panel before
+    // lifting it, which is what light bending through a thick edge looks like.
+    const Rgb rimSrc = gs.refract
+      ? rgbMix(glassSkyAt(panelRow + gs.refract), RGB_WHITE, (uint8_t)(gs.lift + 24))
+      : body;
+    Rgb rimTopC  = rgbMix(rimSrc, RGB_WHITE, gs.rimTop);
+    Rgb rimSideC = rgbMix(rimSrc, RGB_WHITE, gs.rimSide);
+    Rgb rimBotC  = gs.rimBot >= 0
+      ? rgbMix(body, RGB_WHITE, (uint8_t)gs.rimBot)
+      : rgbMix(body, RGB_BLACK, (uint8_t)(-gs.rimBot));
+    if (warnRim) {
+      rimTopC  = rgbMix(rimTopC,  *warnRim, 200);
+      rimSideC = rgbMix(rimSideC, *warnRim, 210);
+      rimBotC  = rgbMix(rimBotC,  *warnRim, 170);
+    }
+
+    // Vertical rim weights are constant across the row.
+    const int32_t evT = ((int32_t)dy << 8) + 128;
+    const int32_t evB = ((int32_t)(paneH - 1 - dy) << 8) + 128;
+    int32_t wTop = evT < RIM_VERT_Q8 ? ((RIM_VERT_Q8 - evT) * 255) / RIM_VERT_Q8 : 0;
+    int32_t wBot = evB < RIM_VERT_Q8 ? ((RIM_VERT_Q8 - evB) * 255) / RIM_VERT_Q8 : 0;
+
+    // Specular height for this row is a per-column parabola; precompute the
+    // row's falloff factor once.
+    int32_t glossF = 0;
+    if (glossH > 0 && dy < glossH) {
+      const int32_t f = 255 - ((int32_t)dy * 255) / glossH;
+      glossF = (f * f) / 255;                       // quadratic, no hard edge
+    }
+
+    // Fast interior. Away from the corner curve, the rim and the specular, a
+    // pane row is one flat colour and only the ordered dither varies - and the
+    // dither repeats every 8 columns. Precomputing those 8 values turns the
+    // bulk of every pane into an array read plus a store, instead of six
+    // rgbMix chains per pixel. This is the difference between a 49 ms Glass
+    // Tiles frame and one that fits the budget.
+    const bool plainRow = (insQ8 == 0) && (wTop == 0) && (wBot == 0) && (glossF == 0);
+    uint16_t dith[8];
+    if (plainRow) for (int16_t i = 0; i < 8; i++) dith[i] = rgbTo565(body, i, dy);
+    const int16_t edge = 3;   // widest the side rim can reach
+
+    const int16_t x0 = wx, x1 = wx + ww;
+    for (int16_t x = x0; x < x1; x++) {
+      if (plainRow && x >= edge && x < paneW - edge) {
+        gcPixel(c, x, dy, dith[x & 7]);
+        continue;
+      }
+      const int32_t pxL = ((int32_t)x << 8), pxC = pxL + 128;
+
+      // Horizontal coverage of the rounded shape by this pixel.
+      int32_t a = pxL > xlQ8 ? pxL : xlQ8;
+      int32_t b = (pxL + 256) < xrQ8 ? (pxL + 256) : xrQ8;
+      int32_t cov = b - a;
+      if (cov <= 0) { gcPixel(c, x, dy, rgbTo565(sky, x, dy)); continue; }
+      if (cov > 256) cov = 256;
+
+      Rgb col = body;
+
+      if (glossF > 0) {
+        // Parabolic gloss: brightest at the pane's centre column, fading to
+        // nothing at the sides - the Vista arc.
+        const int32_t t = ((pxC - cxQ8) * 255) / (cxQ8 > 0 ? cxQ8 : 1);
+        int32_t shape = 255 - (t * t * 140) / (255 * 255);
+        if (shape > 0) {
+          const int32_t al = ((int32_t)gs.glossA * glossF / 255) * shape / 255;
+          if (al > 0) col = rgbMix(col, RGB_WHITE, (uint8_t)(al > 255 ? 255 : al));
+        }
+      }
+
+      // Rim: bottom first, then sides, then top - the top edge always wins,
+      // which is what reads as a light source above the panel.
+      const int32_t dl = pxC - xlQ8, dr = xrQ8 - pxC;
+      const int32_t e = dl < dr ? dl : dr;
+      const int32_t wSide = e < RIM_SIDE_Q8 ? ((RIM_SIDE_Q8 - e) * 255) / RIM_SIDE_Q8 : 0;
+      if (wBot  > 0) col = rgbMix(col, rimBotC,  (uint8_t)wBot);
+      if (wSide > 0) col = rgbMix(col, rimSideC, (uint8_t)wSide);
+      if (wTop  > 0) col = rgbMix(col, rimTopC,  (uint8_t)wTop);
+
+      // Antialiased outer edge against the backdrop.
+      if (cov < 256) col = rgbMix(sky, col, (uint8_t)cov);
+      gcPixel(c, x, dy, rgbTo565(col, x, dy));
+    }
+  }
+}
+
+// --- motion -----------------------------------------------------------------
+//
+// The companion pushes roughly once a second. Stepping the plot a whole column
+// per packet is a visible jerk, so the chart glides by a fraction of a sample
+// between packets and the newest reading slides in over the interval. That
+// costs one packet of latency at the right edge, which is invisible, and is
+// what buys continuous motion instead of a 1 Hz stutter.
+//
+// The reading itself is NOT eased. Running the digits through intermediate
+// values would make them change on every frame instead of once per packet -
+// more churn, and a stats readout that shows numbers the sensor never
+// reported. Motion belongs to the chart; the number stays exact.
+static uint32_t gPktIntervalMs = 1000;
+static uint32_t gPrevRx = 0;
+static uint16_t gScrollQ8 = 0;
+static bool gNewSample = false;
+
+static void glassAdvanceMotion() {
+  if (gCaptureRender) return;      // capture must not consume pacing state
+  const uint32_t rx = pcData.lastReceived;
+  gNewSample = false;
+  if (rx == 0) { gScrollQ8 = 0; return; }
+  if (rx != gPrevRx) {
+    if (gPrevRx != 0) {
+      const uint32_t dt = rx - gPrevRx;
+      if (dt >= 150 && dt <= 10000) gPktIntervalMs = (gPktIntervalMs * 3 + dt) / 4;
+    }
+    gPrevRx = rx;
+    gNewSample = true;
+  }
+  const uint32_t elapsed = millis() - rx;
+  const uint32_t span = gPktIntervalMs ? gPktIntervalMs : 1000;
+  const uint32_t q = (elapsed * 256) / span;
+  gScrollQ8 = (uint16_t)(q > 256 ? 256 : q);
+}
+
+// --- chart ------------------------------------------------------------------
+
+// Catmull-Rom sample with a monotone clamp. Only visibly different from a
+// straight lerp while the ring is still filling (few samples across many
+// columns), but that is exactly when the stepped polyline looks worst; the
+// clamp stops the spline overshooting a percentage below zero.
+static float histSmooth(const SlotHistory& hist, float fi) {
+  const int n = hist.count;
+  int i1 = (int)fi;
+  if (i1 < 0) i1 = 0;
+  if (i1 > n - 1) i1 = n - 1;
+  const float t = fi - (float)i1;
+  const int i0 = i1 > 0 ? i1 - 1 : 0;
+  const int i2 = i1 + 1 < n ? i1 + 1 : n - 1;
+  const int i3 = i1 + 2 < n ? i1 + 2 : n - 1;
+  const float p0 = pcHistoryAt(hist, (uint8_t)i0), p1 = pcHistoryAt(hist, (uint8_t)i1);
+  const float p2 = pcHistoryAt(hist, (uint8_t)i2), p3 = pcHistoryAt(hist, (uint8_t)i3);
+  const float v = 0.5f * ((2.0f * p1) +
+                          (-p0 + p2) * t +
+                          (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t * t +
+                          (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t * t * t);
+  const float lo = p1 < p2 ? p1 : p2, hi = p1 < p2 ? p2 : p1;
+  return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// Antialiased chart on glass: a vertical gradient area fill that blends into
+// the pane instead of punching a flat dim block through it, under a soft 2px
+// stroke. Every edge is coverage-blended, so nothing here has a hard step.
+// scrollQ8 slides the sample window by a fraction of one sample so the chart
+// glides between packets rather than jumping a whole column.
+// paneAccent reproduces the pane exactly under the plot; lineAccent is the
+// series ink. They differ whenever a slot is in warn - the pane goes warn
+// coloured while the chart keeps its identity hue - and using one for both is
+// what makes the plot show up as a lighter rectangle stamped on the card.
+// fadeIn softens the fill's leading edge over that many columns, so a chart
+// that starts mid-pane has no hard vertical seam.
+static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
+                       uint8_t slotIdx, int16_t ox, int16_t oy,
+                       int16_t w, int16_t h,
+                       const Rgb& paneAccent, const Rgb& lineAccent,
+                       int16_t paneY, int16_t paneLocalY,
+                       int16_t paneH, int16_t fadeIn,
+                       const GlassStyle& gs, bool advance, uint16_t scrollQ8) {
+  float lo, hi;
+  if (w < 6 || h < 6) return;
+  if (!sparkBounds(hist, slotIdx, advance, lo, hi)) return;
+  const float span = (hi - lo) > 1e-6f ? (hi - lo) : 1.0f;
+
+  const int32_t hQ8 = ((int32_t)(h - 1)) << 8;
+  int32_t yLast = 0;
+
+  // The pane colour under the plot depends only on the row, so evaluate it
+  // once per row rather than once per pixel. Measured on the S3: leaving this
+  // in the inner loop cost 69 ms per Glass Tiles frame (26k calls, each with
+  // an integer divide inside glassSkyAt) against a 50 ms budget.
+  static const int16_t CHART_H_MAX = 160;
+  if (h > CHART_H_MAX) h = CHART_H_MAX;
+  Rgb rowBase[CHART_H_MAX];
+  for (int16_t yy = 0; yy < h; yy++) {
+    rowBase[yy] = glassPaneRow((int16_t)(paneY + paneLocalY + yy),
+                               (int16_t)(paneLocalY + yy), paneH, paneAccent, gs);
+  }
+  const Rgb lineInk = rgbMix(lineAccent, RGB_WHITE, 40);
+  const uint8_t AREA_TOP = 150;   // fill alpha just under the stroke
+  const uint8_t AREA_BOT = 26;    // ...and at the floor of the plot
+
+  // Column geometry first, so the stroke can span between neighbours.
+  int32_t yPrev = 0;
+  const float denom = (w > 1) ? (float)(w - 1) : 1.0f;
+  // Lag the window by one sample and slide it forward across the packet
+  // interval: at scroll 0 the window ends at the second-newest reading, at
+  // full scroll it ends exactly on the newest - which is the moment the next
+  // packet lands. Continuous motion with no seam at the handover.
+  const bool glide = (hist.count >= 3);
+  const float step = glide ? (float)(hist.count - 2) / denom
+                           : (float)(hist.count - 1) / denom;
+  const float shift = glide ? ((float)scrollQ8 / 256.0f) : 0.0f;
+
+  for (int16_t xi = 0; xi < w; xi++) {
+    float fi = (float)xi * step + shift;
+    if (fi > (float)(hist.count - 1)) fi = (float)(hist.count - 1);
+    const float v = histSmooth(hist, fi);
+    int32_t yQ8 = hQ8 - (int32_t)(((v - lo) / span) * (float)hQ8);
+    if (yQ8 < 0) yQ8 = 0;
+    if (yQ8 > hQ8) yQ8 = hQ8;
+    if (xi == 0) yPrev = yQ8;
+
+    // Stroke spans from the midpoint with the previous column to this sample,
+    // which keeps a steep segment connected without drawing a staircase.
+    const int32_t midPrev = (yPrev + yQ8) / 2;
+    int32_t top = yQ8 < midPrev ? yQ8 : midPrev;
+    int32_t bot = yQ8 > midPrev ? yQ8 : midPrev;
+    top -= 140;   // ~1.1px half-stroke
+    bot += 140;
+
+    const int16_t px = ox + xi;
+    // Leading-edge fade so a chart that starts inside a pane has no seam.
+    const int32_t edgeA = (fadeIn > 0 && xi < fadeIn)
+      ? ((int32_t)xi * 255) / fadeIn : 255;
+
+    for (int16_t yy = 0; yy < h; yy++) {
+      const int32_t rowT = ((int32_t)yy) << 8, rowB = rowT + 256;
+
+      // Whatever the pane would have been at this pixel is the chart's ground.
+      Rgb base = rowBase[yy];
+
+      // Area fill under the stroke, fading with depth.
+      int32_t al = -1;
+      if (rowT >= bot) {
+        const int32_t depth = hQ8 > bot ? ((rowT - bot) * 255) / (hQ8 - bot + 1) : 255;
+        al = AREA_TOP - ((AREA_TOP - AREA_BOT) * depth) / 255;
+      } else if (rowB > bot) {
+        // Partial row at the fill's top edge.
+        al = (AREA_TOP * ((rowB - bot) * 255 / 256)) / 255;
+      }
+      if (al > 0) {
+        al = (al * edgeA) / 255;
+        base = rgbMix(base, lineAccent, (uint8_t)(al > 255 ? 255 : al));
+      }
+
+      // Stroke coverage for this row.
+      const int32_t a = rowT > top ? rowT : top;
+      const int32_t b = rowB < bot ? rowB : bot;
+      int32_t cov = b - a;
+      if (cov > 0) {
+        if (cov > 256) cov = 256;
+        cov = (cov * edgeA) / 255;
+        if (cov > 0) base = rgbMix(base, lineInk, (uint8_t)cov);
+      }
+
+      gcPixel(c, px, oy + yy, rgbTo565(base, px, oy + yy));
+    }
+    yPrev = yQ8;
+    if (xi == w - 1) yLast = yQ8;
+  }
+
+  // Endpoint marker: a soft round dot rather than the hard filled circle the
+  // flat faces use, so the live end of the series reads without a stamped edge.
+  {
+    const int16_t cxp = ox + w - 3, cyp = oy + (int16_t)(yLast >> 8);
+    for (int16_t dy = -2; dy <= 2; dy++) {
+      for (int16_t dx = -2; dx <= 2; dx++) {
+        const int32_t d2 = dx * dx + dy * dy;
+        if (d2 > 5) continue;
+        const uint8_t al = (d2 <= 1) ? 255 : (d2 <= 2 ? 190 : 90);
+        const int16_t qx = cxp + dx, qy = cyp + dy;
+        if (qy < oy || qy >= oy + h || qx < ox || qx >= ox + w) continue;
+        const Rgb dot = rgbMix(rowBase[qy - oy], RGB_WHITE, al);
+        gcPixel(c, qx, qy, rgbTo565(dot, qx, qy));
+      }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 //  Flicker-free value regions. The old scheme cleared the whole cell/row and
 //  repainted it, which blinks at the packet cadence. Instead: opaque glyphs
 //  overwrite the previous text in one pass, and only the pixels the new text
@@ -718,7 +1271,10 @@ static void drawNoMetricsHint(int16_t w, int16_t gridH, bool fr) {
   if (!fr) return;
   tft.setTextDatum(MC_DATUM);
   setFont(tft, FONT_BODY);
-  tft.setTextColor(themeSettings.secondaryColor, dispSettings.bgColor);
+  // Transparent on glass: the opaque form stamps a flat box through the
+  // gradient. The glass faces paint their backdrop before calling this.
+  if (styleUsesGlass(displayStyle)) tft.setTextColor(themeSettings.secondaryColor);
+  else tft.setTextColor(themeSettings.secondaryColor, dispSettings.bgColor);
   tft.drawString("No metrics bound", w / 2, gridH / 2);
 }
 
@@ -1627,6 +2183,408 @@ static void drawPulseScreen(bool fr) {
   }
 }
 
+// ---------------------------------------------------------------------------
+//  STYLE_GLASS_TILES / STYLE_GLASS_DUO
+//
+//  Both faces reuse the geometry of the flat face they are based on and swap
+//  the surface underneath it. Two shared compose sprites serve every window on
+//  the panel; they are released when the style changes away so the two glass
+//  faces never hold each other's buffers.
+// ---------------------------------------------------------------------------
+static lgfx::LGFX_Sprite gGlassA, gGlassB;
+static int16_t gGlassAW = 0, gGlassAH = 0, gGlassBW = 0, gGlassBH = 0;
+
+static void glassReleaseSprites() {
+  gGlassA.deleteSprite();
+  gGlassB.deleteSprite();
+  gGlassAW = gGlassAH = gGlassBW = gGlassBH = 0;
+}
+
+// Push the top rows of a compose sprite. The sprite's width IS the window's
+// width, so its buffer stride matches and a partial-height blit is just a
+// shorter pushImage - which is what lets one allocation serve a card's head
+// and its taller body without a resize between them.
+static inline void glassBlit(lgfx::LGFX_Sprite& spr, int16_t x, int16_t y,
+                             int16_t w, int16_t h) {
+  tft.pushImage(x, y, w, h, (const uint16_t*)spr.getBuffer());
+  tft.waitDMA();   // shared sprite: barrier before the next window refills it
+}
+
+// Label ink on glass: mostly white with enough of the slot accent to identify
+// the series, which survives the lifted pane where a dim grey would not.
+static inline uint16_t glassLabelInk(uint16_t accent565) {
+  const Rgb c = rgbMix(RGB_WHITE, rgbFrom565(accent565), 88);
+  return rgbTo565(c, 0, 0);
+}
+
+static const Rgb GLASS_TINT_AERO   = { 44, 96, 150 };
+static const Rgb GLASS_TINT_LIQUID = { 66, 62, 134 };
+
+// Value/unit/label onto an already-composed glass window. Transparent text:
+// the two-argument setTextColor paints an opaque glyph box, which on glass
+// stamps a flat rectangle through the pane. The window is recomposed every
+// time it is pushed, so there is no previous text to erase anyway.
+static void glassHeadText(lgfx::LovyanGFX& g, int16_t x, int16_t cy,
+                          int16_t w, int16_t maxH, const char* label,
+                          const MetricText& text,
+                          const GaugeSlot& s, const PcMetric& m, bool warn,
+                          uint16_t accent) {
+  setFont(g, FONT_SMALL);
+  const int16_t labelW = g.textWidth(label);
+  const int16_t unitW  = g.textWidth(text.unit);
+
+  g.setTextDatum(ML_DATUM);
+  g.setTextColor(glassLabelInk(accent));
+  g.drawString(label, x + 9, cy);
+  g.setTextDatum(MR_DATUM);
+  g.setTextColor(themeSettings.secondaryColor);
+  g.drawString(text.unit, x + w - 9, cy);
+
+  char probe[12];
+  slotProbe(s, m, probe, sizeof(probe));
+  fitValueFont(g, probe, w - 30 - labelW - unitW, maxH);
+  g.setTextDatum(MR_DATUM);
+  g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
+  g.drawString(text.value, x + w - 9 - unitW - 4, cy);
+  g.setTextDatum(TL_DATUM);
+}
+
+static void drawGlassTilesScreen(bool fr) {
+  const int16_t w = (int16_t)tft.width();
+  const int16_t h = (int16_t)tft.height();
+  const uint16_t bg = dispSettings.bgColor;
+
+  VisSlot vis[NUM_GAUGE_SLOTS];
+  uint8_t n = collectVisibleSlots(vis);
+  if (!layoutCountReady(n)) return;
+
+  glassSkyInit(h, GLASS_TINT_AERO, 150, 62, 90);
+
+  static uint8_t lastN = 0xFF;
+  bool relayout = false;
+  if (!gCaptureRender && n != lastN) {
+    if (!fr) { resetGaugeTextCache(); }
+    lastN = n;
+    fr = true;
+    relayout = true;
+  }
+
+  if (n == 0) {
+    if (fr) { glassBackdrop(w, h); drawNoMetricsHint(w, h, fr); }
+    return;
+  }
+
+  // Glass charts glide continuously rather than stepping every sparkRedrawSec:
+  // they are recomposed each frame at the faster glass cadence, and only the
+  // bounds smoothing is gated on an actual new packet.
+  glassAdvanceMotion();
+  const bool chartTick = true;
+  const bool advance = gCaptureRender ? false : gNewSample;
+  const uint16_t scroll = gCaptureRender ? 0 : gScrollQ8;
+
+  const uint8_t cols = (n <= 2) ? 1 : 2;
+  const uint8_t rows = (n + cols - 1) / cols;
+  const int16_t pad = 4, gap = 4;
+  const int16_t cardW = (w - 2 * pad - (cols - 1) * gap) / cols;
+  const int16_t cardH = (h - 2 * pad - (rows - 1) * gap) / rows;
+  int16_t headH = (cardH * 2) / 5;
+  if (headH < 24) headH = 24;
+  const int16_t bodyH = cardH - headH;
+
+  RendererWrite rw(tft);
+
+  // The backdrop is only repainted when something actually blanked the panel;
+  // the panes themselves are opaque blits that cover their own ground.
+  if (fr && (gScreenCleared || relayout || gCaptureRender)) glassBackdrop(w, h);
+
+  const int16_t sprH = headH > bodyH ? headH : bodyH;
+  const bool off = ensureSprite(gGlassA, gGlassAW, gGlassAH, cardW, sprH);
+
+  for (uint8_t i = 0; i < n; i++) {
+    const int16_t x = pad + (i % cols) * (cardW + gap);
+    const int16_t y = pad + (i / cols) * (cardH + gap);
+    const PcMetric& m = *vis[i].metric;
+    const GaugeSlot& s = *vis[i].slot;
+    const char* label = vis[i].label;
+    const float scale = slotScaleMax(s, m);
+    const bool warn = slotWarn(vis[i].slotIdx, m.value, scale);
+    const uint16_t accent565 = s.arcColor;
+    // One accent everywhere on the card - body, chart ground and series ink.
+    // Warn is carried by the lit rim and the value colour, never by retinting
+    // the body, which would leave the chart looking like a foreign rectangle.
+    const Rgb paneAccent = rgbFrom565(accent565);
+    const Rgb lineAccent = paneAccent;
+    const Rgb warnRgb = rgbFrom565(dispSettings.warnColor);
+    const Rgb* warnRim = warn ? &warnRgb : nullptr;
+
+    MetricText text;
+    formatMetricText(m, m.value, text);
+    char key[16];
+    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    const bool headChanged = gaugeTextChanged(x + cardW / 2, y, key, label, fr);
+
+    if (headChanged) {
+      if (off) {
+        resetFontCache();
+        GlassCanvas c = glassCanvasFor(gGlassA, &gGlassA, 0, 0);
+        glassPaneWindow(c, 0, 0, cardW, headH, y, cardW, cardH, 7,
+                        paneAccent, GLASS_AERO, warnRim);
+        glassHeadText(gGlassA, 0, headH / 2 + 1, cardW, headH - 6, label,
+                      text, s, m, warn, accent565);
+        glassBlit(gGlassA, x, y, cardW, headH);
+        resetFontCache();
+      } else {
+        GlassCanvas c = glassCanvasFor(tft, nullptr, x, y);
+        glassPaneWindow(c, 0, 0, cardW, headH, y, cardW, cardH, 7,
+                        paneAccent, GLASS_AERO, warnRim);
+        glassHeadText(tft, x, y + headH / 2 + 1, cardW, headH - 6, label,
+                      text, s, m, warn, accent565);
+      }
+    }
+
+    if ((chartTick || fr) && bodyH > 10) {
+      if (off) {
+        // oy = -headH maps pane row headH onto sprite row 0, so the body
+        // window is composed at the top of the same buffer the head used.
+        GlassCanvas c = glassCanvasFor(gGlassA, &gGlassA, 0, -headH);
+        glassPaneWindow(c, 0, headH, cardW, bodyH, y, cardW, cardH, 7,
+                        paneAccent, GLASS_AERO, warnRim);
+        glassChart(c, pcHistory[vis[i].slotIdx], vis[i].slotIdx,
+                   7, headH + 2, cardW - 14, bodyH - 8,
+                   paneAccent, lineAccent, y, headH + 2, cardH, 0,
+                   GLASS_AERO, advance, scroll);
+        glassBlit(gGlassA, x, y + headH, cardW, bodyH);
+      } else {
+        GlassCanvas c = glassCanvasFor(tft, nullptr, x, y);
+        glassPaneWindow(c, 0, headH, cardW, bodyH, y, cardW, cardH, 7,
+                        paneAccent, GLASS_AERO, warnRim);
+        glassChart(c, pcHistory[vis[i].slotIdx], vis[i].slotIdx,
+                   7, headH + 2, cardW - 14, bodyH - 8,
+                   paneAccent, lineAccent, y, headH + 2, cardH, 0,
+                   GLASS_AERO, advance, scroll);
+      }
+    }
+  }
+  (void)bg;
+}
+
+static void drawGlassDuoScreen(bool fr) {
+  const int16_t w = (int16_t)tft.width();
+  const int16_t h = (int16_t)tft.height();
+  const bool big = largeCanvas(w, h);
+
+  VisSlot vis[NUM_GAUGE_SLOTS];
+  uint8_t n = collectVisibleSlots(vis);
+  if (!layoutCountReady(n)) return;
+
+  glassSkyInit(h, GLASS_TINT_LIQUID, 134, 54, 96);
+
+  static uint8_t lastN = 0xFF;
+  bool relayout = false;
+  if (!gCaptureRender && n != lastN) {
+    if (!fr) { resetGaugeTextCache(); }
+    lastN = n;
+    fr = true;
+    relayout = true;
+  }
+
+  if (n == 0) {
+    if (fr) { glassBackdrop(w, h); drawNoMetricsHint(w, h, fr); }
+    return;
+  }
+
+  glassAdvanceMotion();
+  const bool chartTick = true;
+  const bool advance = gCaptureRender ? false : gNewSample;
+  const uint16_t scroll = gCaptureRender ? 0 : gScrollQ8;
+
+  RendererWrite rw(tft);
+  if (fr && (gScreenCleared || relayout || gCaptureRender)) glassBackdrop(w, h);
+
+  const int16_t margin = 5, vgap = 4;
+  const uint8_t bands = (n >= 2) ? 2 : 1;
+  const int16_t paneW = w - 2 * margin;
+  // Band height backs off as pill rows are added. At eight metrics two bands
+  // at 31% left the three pill rows 22px each, which clipped their labels.
+  const uint8_t prowsPlanned = (n > 2) ? (uint8_t)((n - 2 + 1) / 2) : 0;
+  const uint8_t bandPct = (n == 1) ? (big ? 34 : 42)
+                        : (n == 2) ? (big ? 42 : 48)
+                        : (prowsPlanned <= 1) ? (big ? 30 : 34)
+                        : (prowsPlanned == 2) ? (big ? 26 : 30)
+                                              : (big ? 22 : 26);
+  const int16_t bandH = (int16_t)((h * bandPct) / 100);
+  const int16_t radius = 16;
+  const int16_t halfW = paneW / 2;
+
+  const bool off = ensureSprite(gGlassA, gGlassAW, gGlassAH, halfW, bandH);
+
+  for (uint8_t b = 0; b < bands; b++) {
+    const int16_t y = margin + b * (bandH + vgap);
+    const PcMetric& m = *vis[b].metric;
+    const GaugeSlot& s = *vis[b].slot;
+    const char* label = vis[b].label;
+    const float scale = slotScaleMax(s, m);
+    const bool warn = slotWarn(vis[b].slotIdx, m.value, scale);
+    const uint16_t accent565 = s.arcColor;
+    const Rgb paneAccent = rgbFrom565(accent565);
+    const Rgb lineAccent = paneAccent;
+    const Rgb warnRgb = rgbFrom565(dispSettings.warnColor);
+    const Rgb* warnRim = warn ? &warnRgb : nullptr;
+
+    MetricText text;
+    formatMetricText(m, m.value, text);
+    char key[16];
+    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    const bool textChanged = gaugeTextChanged(3, y + bandH, key, label, fr);
+
+    // Left capsule half: name and reading.
+    if (textChanged) {
+      lgfx::LovyanGFX& g = off ? (lgfx::LovyanGFX&)gGlassA : (lgfx::LovyanGFX&)tft;
+      const int16_t gx = off ? 0 : margin, gy = off ? 0 : y;
+      if (off) resetFontCache();
+      GlassCanvas c = off ? glassCanvasFor(gGlassA, &gGlassA, 0, 0)
+                          : glassCanvasFor(tft, nullptr, margin, y);
+      glassPaneWindow(c, 0, 0, halfW, bandH, y, paneW, bandH, radius,
+                      paneAccent, GLASS_LIQUID, warnRim);
+
+      setFont(g, FONT_SMALL);
+      g.setTextDatum(TL_DATUM);
+      g.setTextColor(glassLabelInk(accent565));
+      g.drawString(label, gx + 15, gy + 9);
+      const int16_t lfh = (int16_t)g.fontHeight();
+
+      char probe[12];
+      slotProbe(s, m, probe, sizeof(probe));
+      setFont(g, FONT_SMALL);
+      const int16_t unitW = g.textWidth(text.unit);
+      const int16_t gapY = gy + 9 + lfh;
+      const int16_t band = (gy + bandH - 10) - gapY;
+      const FontID vf = fitValueFont(g, probe, halfW - 28 - unitW, band);
+      const int16_t valueFh = (int16_t)g.fontHeight();
+      const int16_t baseY = valueBaseline(gapY, band, valueFh);
+      setFont(g, vf);
+      g.setTextDatum(BL_DATUM);
+      g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
+      g.drawString(text.value, gx + 14, baseY);
+      const int16_t vw = (int16_t)g.textWidth(text.value);
+      setFont(g, FONT_SMALL);
+      g.setTextColor(themeSettings.secondaryColor);
+      g.drawString(text.unit, gx + 14 + vw + 5, baseY);
+      g.setTextDatum(TL_DATUM);
+
+      if (off) {
+        glassBlit(gGlassA, margin, y, halfW, bandH);
+        resetFontCache();
+      }
+    }
+
+    // Right capsule half: the chart, full-bleed inside the rounded shape.
+    if (chartTick || fr) {
+      GlassCanvas c = off ? glassCanvasFor(gGlassA, &gGlassA, -halfW, 0)
+                          : glassCanvasFor(tft, nullptr, margin, y);
+      glassPaneWindow(c, halfW, 0, paneW - halfW, bandH, y, paneW, bandH,
+                      radius, paneAccent, GLASS_LIQUID, warnRim);
+      glassChart(c, pcHistory[vis[b].slotIdx], vis[b].slotIdx,
+                 halfW + 4, 8, paneW - halfW - 16, bandH - 18,
+                 paneAccent, lineAccent, y, 8, bandH, 10,
+                 GLASS_LIQUID, advance, scroll);
+      if (off) glassBlit(gGlassA, margin + halfW, y, paneW - halfW, bandH);
+    }
+  }
+
+  if (n <= 2) return;
+
+  // Remaining metrics as pills: name, reading, and a meter on the floor.
+  const int16_t y0 = margin + bands * (bandH + vgap);
+  const uint8_t rest = n - 2;
+  const uint8_t prows = (rest + 1) / 2;
+  const int16_t hgap = 4;
+  const int16_t pillW = (w - 2 * margin - hgap) / 2;
+  const int16_t pillH = (h - y0 - margin - (prows - 1) * vgap) / prows;
+  if (pillH < 16) return;
+  const bool poff = ensureSprite(gGlassB, gGlassBW, gGlassBH, pillW, pillH);
+
+  for (uint8_t i = 0; i < rest; i++) {
+    const uint8_t vi = i + 2;
+    const int16_t x = margin + (i % 2) * (pillW + hgap);
+    const int16_t y = y0 + (i / 2) * (pillH + vgap);
+    const PcMetric& m = *vis[vi].metric;
+    const GaugeSlot& s = *vis[vi].slot;
+    const char* label = vis[vi].label;
+    const float scale = slotScaleMax(s, m);
+    const bool warn = slotWarn(vis[vi].slotIdx, m.value, scale);
+    const uint16_t accent565 = s.arcColor;
+    const Rgb paneAccent = rgbFrom565(accent565);
+    const Rgb warnRgb = rgbFrom565(dispSettings.warnColor);
+    const Rgb* warnRim = warn ? &warnRgb : nullptr;
+
+    MetricText text;
+    formatMetricText(m, m.value, text);
+    char key[16];
+    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    if (!gaugeTextChanged(x + 1, y + 1, key, label, fr)) continue;
+
+    lgfx::LovyanGFX& g = poff ? (lgfx::LovyanGFX&)gGlassB : (lgfx::LovyanGFX&)tft;
+    const int16_t gx = poff ? 0 : x, gy = poff ? 0 : y;
+    if (poff) resetFontCache();
+    GlassCanvas c = poff ? glassCanvasFor(gGlassB, &gGlassB, 0, 0)
+                         : glassCanvasFor(tft, nullptr, x, y);
+    glassPaneWindow(c, 0, 0, pillW, pillH, y, pillW, pillH, 12,
+                    paneAccent, GLASS_LIQUID, warnRim);
+
+    // Name and reading share one centreline. Stacking them needs ~34px and a
+    // pill is often half that, which is what clipped the labels off the
+    // bottom row; the meter then takes the floor on its own.
+    const int16_t cy = gy + pillH / 2 - 2;
+    setFont(g, FONT_SMALL);
+    const int16_t labelW = g.textWidth(label);
+    const int16_t unitW = g.textWidth(text.unit);
+    g.setTextDatum(ML_DATUM);
+    g.setTextColor(glassLabelInk(accent565));
+    g.drawString(label, gx + 12, cy);
+
+    char probe[12];
+    slotProbe(s, m, probe, sizeof(probe));
+    fitValueFont(g, probe, pillW - 34 - labelW - unitW, pillH - 12);
+    g.setTextDatum(MR_DATUM);
+    g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
+    g.drawString(text.value, gx + pillW - 11 - unitW - 4, cy);
+    setFont(g, FONT_SMALL);
+    g.setTextColor(themeSettings.secondaryColor);
+    g.drawString(text.unit, gx + pillW - 11, cy);
+    g.setTextDatum(TL_DATUM);
+
+    // Meter on the capsule floor, drawn through the compositor so its ends
+    // stay soft against the pane instead of clipping to a hard rectangle.
+    const int16_t mx = 13, mw = pillW - 26, my = pillH - 6;
+    if (mw > 12 && my > 0) {
+      const float frac = slotFraction(m.value, scale);
+      const int32_t fillQ8 = (int32_t)(frac * (float)(mw << 8));
+      const Rgb fillC = rgbFrom565(warn ? dispSettings.warnColor : accent565);
+      for (int16_t dx = 0; dx < mw; dx++) {
+        const int32_t pxL = (int32_t)dx << 8;
+        int32_t cov = fillQ8 - pxL;
+        if (cov < 0) cov = 0;
+        if (cov > 256) cov = 256;
+        for (int16_t dy = 0; dy < 2; dy++) {
+          const int16_t qx = gx + mx + dx, qy = gy + my + dy;
+          Rgb base = glassPaneRow(y + my + dy, (int16_t)(my + dy), pillH,
+                                  paneAccent, GLASS_LIQUID);
+          base = rgbMix(base, RGB_BLACK, 70);                 // track
+          if (cov > 0) base = rgbMix(base, fillC, (uint8_t)cov);
+          if (poff) gGlassB.drawPixel(qx, qy, rgbTo565(base, qx, qy));
+          else tft.drawPixel(qx, qy, rgbTo565(base, qx, qy));
+        }
+      }
+    }
+
+    if (poff) {
+      glassBlit(gGlassB, x, y, pillW, pillH);
+      resetFontCache();
+    }
+  }
+}
+
 // Status badge - the LHM trouble indicator now that the bottom bar is gone.
 // A small dot in the top-right corner, drawn ONLY while the companion reports
 // a non-OK status, so the screen stays clean in the healthy steady state.
@@ -1641,14 +2599,27 @@ static void drawStatusBadge(int16_t w) {
     default: return;   // OK: no badge
   }
   tft.fillCircle(w - 9, 9, 4, color);
-  tft.drawCircle(w - 9, 9, 5, dispSettings.bgColor);  // separation ring
+  // Separation ring. On glass the flat bgColor would punch a dark hole in the
+  // gradient, so the ring wears the backdrop colour of the row it sits on.
+  const uint16_t ring = styleUsesGlass(displayStyle)
+    ? rgbTo565(glassSkyAt(9), w - 9, 9) : dispSettings.bgColor;
+  tft.drawCircle(w - 9, 9, 5, ring);
 }
 
 // Dispatch on the configured monitor face. A live style change (portal save)
 // or a companion status flip arrives without a screen-state transition, so
 // the previous pixels are still on the panel: detect both here and start
 // from a clean screen.
+// Compose+blit cost of the last monitor frame, and the worst seen since boot.
+// The glass faces run a per-pixel compositor at 20 Hz, so this is the number
+// that says whether the frame budget actually holds on a given board.
+static uint32_t gFrameUs = 0, gFrameMaxUs = 0;
+uint32_t monitorFrameUs()    { return gFrameUs; }
+uint32_t monitorFrameMaxUs() { return gFrameMaxUs; }
+void resetMonitorFrameStats() { gFrameMaxUs = 0; }
+
 static void drawMonitorStyled(bool fr) {
+  const uint32_t t0 = micros();
   static uint8_t lastStyle = 0xFF;
   static uint8_t lastPcStatus = 0xFF;
   const uint8_t stableStatus = debouncedStatus();
@@ -1660,6 +2631,10 @@ static void drawMonitorStyled(bool fr) {
       gScreenCleared = true;
       fr = true;
     }
+    // Leaving glass frees its compose buffers - the two glass faces size their
+    // sprites differently and must not both hold one while only one can draw.
+    if (displayStyle != lastStyle && !styleUsesGlass(displayStyle))
+      glassReleaseSprites();
     lastStyle = displayStyle;
     lastPcStatus = stableStatus;
   }
@@ -1669,11 +2644,17 @@ static void drawMonitorStyled(bool fr) {
     case STYLE_STRIPS:      drawStripsScreen(fr);     break;
     case STYLE_DUO:         drawDuoScreen(fr);        break;
     case STYLE_PULSE:       drawPulseScreen(fr);      break;
+    case STYLE_GLASS_TILES: drawGlassTilesScreen(fr); break;
+    case STYLE_GLASS_DUO:   drawGlassDuoScreen(fr);   break;
     case STYLE_TILES:
     default:                drawTilesScreen(fr);      break;
   }
   drawStatusBadge((int16_t)tft.width());
-  if (!gCaptureRender) gScreenCleared = false;
+  if (!gCaptureRender) {
+    gScreenCleared = false;
+    gFrameUs = micros() - t0;
+    if (gFrameUs > gFrameMaxUs) gFrameMaxUs = gFrameUs;
+  }
 }
 
 static void drawIdleClock() {
@@ -1734,7 +2715,14 @@ void updateDisplay() {
     return;
   }
 
-  if (!forceRedraw && (now - lastUpdate < DISPLAY_UPDATE_MS)) return;
+  // The glass faces animate their charts, so they need a frame rate the eye
+  // reads as motion rather than the 4 Hz the static faces are paced at. Only
+  // while the monitor screen is actually showing a live feed - an idle clock
+  // or an offline panel keeps the calm cadence.
+  const uint32_t frameInterval =
+    (currentScreen == SCREEN_MONITOR && pcData.online &&
+     styleUsesGlass(displayStyle)) ? GLASS_UPDATE_MS : DISPLAY_UPDATE_MS;
+  if (!forceRedraw && (now - lastUpdate < frameInterval)) return;
   lastUpdate = now;
 
   switch (currentScreen) {

@@ -69,6 +69,13 @@ void markScreenCleared();
 // and how many allocation attempts have failed since boot.
 bool sparkSpriteActive();
 uint16_t sparkSpriteFails();
+
+// Monitor frame compose+blit cost, microseconds. The glass faces run a
+// per-pixel compositor at GLASS_UPDATE_MS, so this is what says whether the
+// frame budget holds on a given board.
+uint32_t monitorFrameUs();
+uint32_t monitorFrameMaxUs();
+void resetMonitorFrameStats();
 // Companion wobble diagnostics: raw per-frame changes seen vs debounced
 // transitions the layout actually reacted to.
 uint16_t rawNChanges();

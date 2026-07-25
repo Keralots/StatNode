@@ -21,7 +21,8 @@ uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
 static Preferences prefs;
 static const uint8_t BACKLIGHT_SETTINGS_VERSION = 1;
-static const uint8_t TOUCH_SETTINGS_VERSION = 1;
+// v2 widened styleMask to 16 bits so the glass faces (styles 7 and 8) fit.
+static const uint8_t TOUCH_SETTINGS_VERSION = 2;
 static const uint8_t LED_SETTINGS_VERSION = 1;
 static const uint8_t THEME_SETTINGS_VERSION = 1;
 
@@ -203,6 +204,22 @@ void loadSettings() {
     TouchSettings stored;
     prefs.getBytes("touch", &stored, sizeof(stored));
     if (stored.version == TOUCH_SETTINGS_VERSION) touchSettings = stored;
+  } else if (prefs.getBytesLength("touch") == sizeof(TouchSettingsV1)) {
+    // Pre-glass blob: same fields, 8-bit mask, rememberStyle and styleMask in
+    // the opposite order. Copy field by field rather than losing a configured
+    // pad to a size mismatch on the OTA that added the glass faces.
+    TouchSettingsV1 old;
+    prefs.getBytes("touch", &old, sizeof(old));
+    if (old.version == 1) {
+      touchSettings.version       = TOUCH_SETTINGS_VERSION;
+      touchSettings.enabled       = old.enabled;
+      touchSettings.pin           = old.pin;
+      touchSettings.activeHigh    = old.activeHigh;
+      touchSettings.shortAction   = old.shortAction;
+      touchSettings.longAction    = old.longAction;
+      touchSettings.rememberStyle = old.rememberStyle;
+      touchSettings.styleMask     = old.styleMask;
+    }
   }
   if (prefs.getBytesLength("led") == sizeof(LedSettings)) {
     LedSettings stored;
@@ -242,7 +259,7 @@ void loadSettings() {
     touchSettings.shortAction = TOUCH_ACTION_NEXT_STYLE;
   if (touchSettings.longAction >= TOUCH_ACTION_COUNT)
     touchSettings.longAction = TOUCH_ACTION_TOGGLE_POWER;
-  const uint8_t storedTouchStyleMask = touchSettings.styleMask;
+  const uint16_t storedTouchStyleMask = touchSettings.styleMask;
   touchSettings.styleMask &= STYLE_ACTIVE_MASK;
   if (touchSettings.styleMask == 0)
     touchSettings.styleMask = 1u << STYLE_DEFAULT;

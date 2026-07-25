@@ -72,13 +72,25 @@ enum DisplayStyle : uint8_t {
   STYLE_STRIPS      = 4,  // full-width sparkline lane per metric
   STYLE_DUO         = 5,  // slots 1+2 as hero bands + compact grid
   STYLE_PULSE       = 6,  // accent-washed blocks, tint follows load
+  STYLE_GLASS_TILES = 7,  // Tiles geometry on Aero glass panes
+  STYLE_GLASS_DUO   = 8,  // Duo geometry on edge-lit glass capsules
   STYLE_COUNT
 };
 
 constexpr uint8_t STYLE_DEFAULT = STYLE_TILES;
-constexpr uint8_t STYLE_ACTIVE_MASK =
+// Widened to 16 bits when the glass faces pushed the highest style past bit 7.
+// Everything that stores or transports a style mask must match this width.
+constexpr uint16_t STYLE_ACTIVE_MASK =
   (1u << STYLE_BIG_NUMBERS) | (1u << STYLE_TILES) | (1u << STYLE_HERO) |
-  (1u << STYLE_STRIPS) | (1u << STYLE_DUO) | (1u << STYLE_PULSE);
+  (1u << STYLE_STRIPS) | (1u << STYLE_DUO) | (1u << STYLE_PULSE) |
+  (1u << STYLE_GLASS_TILES) | (1u << STYLE_GLASS_DUO);
+
+// True for the faces that paint a gradient backdrop instead of a flat fill.
+// Anything that would otherwise clear a region to dispSettings.bgColor has to
+// branch on this - a flat clear punches a visible hole through the gradient.
+inline bool styleUsesGlass(uint8_t style) {
+  return style == STYLE_GLASS_TILES || style == STYLE_GLASS_DUO;
+}
 
 inline uint8_t normalizeDisplayStyle(uint8_t style) {
   return (style >= STYLE_BIG_NUMBERS && style < STYLE_COUNT)
@@ -107,6 +119,19 @@ enum TouchAction : uint8_t {
 // TTP223 settings use their own versioned blob so adding touch support cannot
 // invalidate existing display or network configuration after OTA.
 struct TouchSettings {
+  uint8_t  version;
+  uint8_t  enabled;
+  uint8_t  pin;
+  uint8_t  activeHigh;
+  uint8_t  shortAction;
+  uint8_t  longAction;
+  uint8_t  rememberStyle;
+  uint16_t styleMask;   // v2: widened, the glass faces need bits 7 and 8
+};
+
+// v1 layout, kept so an existing device keeps its pad configuration across the
+// OTA that widened styleMask. Read-only: see loadSettings' migration.
+struct TouchSettingsV1 {
   uint8_t version;
   uint8_t enabled;
   uint8_t pin;

@@ -835,7 +835,7 @@ static void handleConfigImport() {
   READ_INT(touch, "longAction", 0, TOUCH_ACTION_COUNT - 1,
            nextTouch.longAction, uint8_t);
   READ_INT(touch, "styleMask", 1, (1u << STYLE_COUNT) - 1u,
-           nextTouch.styleMask, uint8_t);
+           nextTouch.styleMask, uint16_t);
   nextTouch.styleMask &= STYLE_ACTIVE_MASK;
   if (nextTouch.styleMask == 0)
     nextTouch.styleMask = 1u << STYLE_DEFAULT;
@@ -1083,6 +1083,8 @@ static void handleApiStatus() {
   doc["led_duty"] = ledCurrentDuty();
   doc["spark_sprite"] = sparkSpriteActive();
   doc["spark_fails"]  = sparkSpriteFails();
+  doc["frame_us"]     = monitorFrameUs();
+  doc["frame_max_us"] = monitorFrameMaxUs();
   doc["raw_n_changes"]      = rawNChanges();
   doc["raw_status_changes"] = rawStatusChanges();
   doc["relayouts"]          = acceptedRelayouts();

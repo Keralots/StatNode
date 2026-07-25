@@ -153,6 +153,13 @@
 //  Display refresh
 // =============================================================================
 #define DISPLAY_UPDATE_MS          250    // ~4 Hz refresh rate
+// ~10 Hz for the animated glass faces. Chosen from measurement, not taste: a
+// Glass Tiles frame at eight metrics costs ~42 ms on the S3 (per-pixel
+// compositing plus ~11 ms of serialised SPI), so 20 Hz would blow the budget
+// and starve WiFi. The chart only scrolls ~1.7 px/second, so 10 sub-steps per
+// pixel is already continuous motion - a faster rate would burn CPU redrawing
+// a picture that has not visibly changed.
+#define GLASS_UPDATE_MS            100
 #define SPARK_REDRAW_MS           3000    // min ms between sparkline repaints (calm charts)
 #define DISPLAY_STATE_TIMEOUT_MS   60000  // 60s timeout for intermediate display states
 
