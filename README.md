@@ -13,8 +13,14 @@ StatNode is the color evolution of my
 
 ## Monitor faces
 
-Six layouts, all driven by the same six ordered metric slots (slot 1 = hero).
-Switch face live from the web portal.
+Six layouts, all driven by the same eight ordered metric slots (slot 1 = hero).
+Switch face live from the web portal. How many readings appear is simply how
+many slots you bind, and every face lays itself out from that count, so there is
+no separate "tile count" setting to disagree with your bindings.
+
+Values are rendered from native font faces sized to the space they have, never
+magnified, so the big readings stay crisp on the small square panels as well as
+on the 320x480 Guition.
 
 | Big numbers | Tiles + sparklines | Hero + list |
 |---|---|---|
@@ -38,9 +44,23 @@ without a reboot (except network changes).
 | ![Overview](docs/images/web-overview.png) | ![Metrics](docs/images/web-metrics.png) | ![Colors](docs/images/web-colors.png) |
 
 Pages: **Overview** (live preview + health), **Display** (face, brightness,
-night schedule, touch), **Metrics & layout** (drag metrics into slots),
-**Colors** (theme presets + contrast check), **Clock**, **Network**,
-**Maintenance** (config backup/restore, factory reset, OTA).
+night schedule), **Metrics & layout** (drag metrics into slots), **Colors**
+(theme presets + contrast check), **Clock**, **Hardware** (touch pad, status
+LED), **Network**, **Maintenance** (config backup/restore, factory reset, OTA).
+
+## Optional peripherals
+
+Both are off by default and configured on the portal's **Hardware** page. Only
+GPIOs that cannot break the display, USB or boot are offered, and the page lists
+the allowed pins for your board.
+
+- **Capacitive touch pad (TTP223):** assign a tap and a hold action - next or
+  previous face, toggle the idle clock, or switch the display off. You choose
+  which faces the cycling walks through.
+- **Status LED:** a single-color LED on a GPIO, driven through a transistor and
+  dimmed by PWM (not an addressable strip). It has its own night level, can go
+  dark whenever the display is dark, and can go dark while the PC is offline.
+  The brightness slider drives the real LED live while the page is open.
 
 ## How it works
 
@@ -135,14 +155,14 @@ page). Pick the file matching your board's env from the
    **BOOT**, then release both buttons.
 3. Click **"Connect"** and select your port.
 4. Click **"Choose File"** and select the full image for your board, e.g.
-   `firmware-v1.0.0-esp32c3.bin`. Make sure the env matches your board, or
+   `firmware-v1.1.0-esp32c3.bin`. Make sure the env matches your board, or
    the screen will stay black.
 5. Set **Flash Address** to `0x0`.
 6. Click **"Program"** and wait ~30 seconds.
 7. Done! Continue with [First-run setup](#first-run-setup).
 
 **Manual:**
-`esptool.py --chip esp32c3 --port COM3 --baud 460800 write_flash 0x0 firmware-v1.0.0-esp32c3.bin`
+`esptool.py --chip esp32c3 --port COM3 --baud 460800 write_flash 0x0 firmware-v1.1.0-esp32c3.bin`
 (use `--chip esp32s3` for the four S3 boards).
 
 ## Build & flash
