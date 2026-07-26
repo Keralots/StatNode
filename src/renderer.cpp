@@ -500,6 +500,26 @@ static bool sparkBounds(const SlotHistory& hist, uint8_t slotIdx, bool advance,
     if (v < wlo) wlo = v;
     if (v > whi) whi = v;
   }
+  // Most sensors arrive quantised (whole percent, whole RPM), and auto-scaling
+  // a nearly flat window amplifies ONE quantum into a huge vertical jump: at 60
+  // samples across ~105 px a run of equal readings is a 2 px wide plateau, so
+  // the series reads as a staircase of blocks rather than a line. Estimate the
+  // quantum from the smallest real change in the ring and keep several of them
+  // in view. A genuinely continuous sensor has a tiny quantum, so this costs it
+  // no detail.
+  float quantum = 0.0f;
+  for (uint8_t i = 1; i < hist.count; i++) {
+    float d = pcHistoryAt(hist, i) - pcHistoryAt(hist, i - 1);
+    if (d < 0) d = -d;
+    if (d > 1e-4f && (quantum == 0.0f || d < quantum)) quantum = d;
+  }
+  const float minSpan = quantum * 6.0f;
+  if (minSpan > 0.0f && (whi - wlo) < minSpan) {
+    const float mid = (whi + wlo) * 0.5f;
+    wlo = mid - minSpan * 0.5f;
+    whi = mid + minSpan * 0.5f;
+  }
+
   float pad = (whi - wlo) * 0.15f;
   if (pad < 0.5f) pad = 0.5f;
   wlo -= pad;
@@ -531,29 +551,50 @@ static bool sparkBounds(const SlotHistory& hist, uint8_t slotIdx, bool advance,
   return true;
 }
 
+// Defined with the chart helpers further down; the flat faces and the glass
+// faces share both so a smoothing setting means the same thing on every face.
+static uint8_t buildChartSeries(const SlotHistory& hist, float* out, uint8_t passes);
+static float histSmooth(const float* s, int n, float fi);
+
 static void sparkPlot(lgfx::LovyanGFX& g, const SlotHistory& hist,
                       uint8_t slotIdx, int16_t ox, int16_t oy,
-                      int16_t w, int16_t h, uint16_t color, bool advance) {
+                      int16_t w, int16_t h, uint16_t color, bool advance,
+                      uint16_t scrollQ8 = 0) {
   float lo, hi;
   if (sparkBounds(hist, slotIdx, advance, lo, hi)) {
     // Column-wise render: a dim area fill under a 2px connected line. A bare
     // 1px polyline disappears on the physical panel wherever the series goes
     // flat near the box edge; the filled area keeps the shape readable.
-    const uint8_t n = hist.count;
+    // Same series treatment as the glass charts: an own copy so the optional
+    // low pass cannot touch the ring the readings print from, sampled with the
+    // Catmull-Rom rather than a bare lerp.
+    float series[PC_HISTORY_LEN];
+    const int n = (int)buildChartSeries(hist, series, chartSmoothing);
     const int16_t dotR = (h >= 24) ? 2 : 1;
     const int16_t plotW = w - dotR - 1;   // reserve so the endpoint dot stays inside
     const uint16_t areaColor = (uint16_t)((color >> 2) & 0x39E7);  // ~1/4 brightness
+    // Fixed samples per pixel, newest pinned to the right edge, so a partly
+    // filled ring grows in from the right instead of re-fitting itself across
+    // the full width on every packet. Both callers clear the box before this,
+    // so the columns ahead of xStart can simply be left alone.
+    const float pdenom = (plotW > 1) ? (float)(plotW - 1) : 1.0f;
+    const float pstep = (float)(PC_HISTORY_LEN - 1) / pdenom;
+    // Lag one sample and slide across the packet interval so the newest
+    // reading walks in instead of popping: at scroll 0 the window ends on the
+    // second-newest, at full scroll exactly on the newest.
+    const bool glide = (n >= 3);
+    const float shift = glide ? ((float)scrollQ8 / 256.0f) : 0.0f;
+    const float pRight = (glide ? (float)(n - 2) : (float)(n - 1)) + shift;
+    int16_t xStart = (int16_t)(plotW - 1 - (int32_t)(pRight / pstep));
+    if (xStart < 0) xStart = 0;
     int16_t prevY = 0, sy = 0;
-    for (int16_t xi = 0; xi < plotW; xi++) {
-      const float fi = (plotW > 1) ? (float)xi * (n - 1) / (plotW - 1) : 0.0f;
-      uint8_t i0 = (uint8_t)fi;
-      const uint8_t i1 = (uint8_t)((i0 + 1 < n) ? i0 + 1 : n - 1);
-      const float t = fi - (float)i0;
-      const float v = pcHistoryAt(hist, i0) * (1.0f - t) + pcHistoryAt(hist, i1) * t;
+    for (int16_t xi = xStart; xi < plotW; xi++) {
+      const float fi = pRight - (float)(plotW - 1 - xi) * pstep;
+      const float v = histSmooth(series, n, fi < 0.0f ? 0.0f : fi);
       sy = oy + (h - 1) - (int16_t)((v - lo) * (float)(h - 1) / (hi - lo));
       g.drawFastVLine(ox + xi, sy, oy + h - sy, areaColor);
-      const int16_t lineTop = (xi && prevY < sy) ? prevY : sy;
-      const int16_t lineBot = (xi && prevY > sy) ? prevY : sy;
+      const int16_t lineTop = (xi > xStart && prevY < sy) ? prevY : sy;
+      const int16_t lineBot = (xi > xStart && prevY > sy) ? prevY : sy;
       int16_t lineH = lineBot - lineTop + 2;   // 2px stroke
       if (lineTop + lineH > oy + h) lineH = oy + h - lineTop;  // stay inside the box
       g.drawFastVLine(ox + xi, lineTop, lineH, color);
@@ -610,7 +651,7 @@ static void drawTextScrim(lgfx::LGFX_Sprite& spr, int16_t x, int16_t y,
 static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
                           int16_t x, int16_t y,
                           int16_t w, int16_t h, uint16_t color, uint16_t bg,
-                          bool advance) {
+                          bool advance, uint16_t scrollQ8 = 0) {
   if (w < 8 || h < 8) return;
 
   if (gSparkW != w || gSparkH != h) {
@@ -625,7 +666,7 @@ static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
   const int16_t oy = off ? 0 : y;
 
   g.fillRect(ox, oy, w, h, bg);
-  sparkPlot(g, hist, slotIdx, ox, oy, w, h, color, advance);
+  sparkPlot(g, hist, slotIdx, ox, oy, w, h, color, advance, scrollQ8);
   if (off) {
     gSparkSpr.pushSprite(tft_ptr, x, y);
     // pushSprite may queue the transfer via SPI DMA and return; the shared
@@ -1009,7 +1050,7 @@ static uint32_t gPrevRx = 0;
 static uint16_t gScrollQ8 = 0;
 static bool gNewSample = false;
 
-static void glassAdvanceMotion() {
+static void advanceChartMotion() {
   if (gCaptureRender) return;      // capture must not consume pacing state
   const uint32_t rx = pcData.lastReceived;
   gNewSample = false;
@@ -1034,8 +1075,26 @@ static void glassAdvanceMotion() {
 // straight lerp while the ring is still filling (few samples across many
 // columns), but that is exactly when the stepped polyline looks worst; the
 // clamp stops the spline overshooting a percentage below zero.
-static float histSmooth(const SlotHistory& hist, float fi) {
-  const int n = hist.count;
+// Copy the ring oldest->newest, optionally low-passed. Each pass is a binomial
+// [1,2,1]/4 kernel, which rounds one-sample needles without moving the series
+// sideways the way a trailing average would. The two ENDPOINTS are left exact
+// so the live end of the chart still agrees with the printed reading.
+static uint8_t buildChartSeries(const SlotHistory& hist, float* out, uint8_t passes) {
+  const uint8_t n = hist.count;
+  for (uint8_t i = 0; i < n; i++) out[i] = pcHistoryAt(hist, i);
+  if (n < 3) return n;
+  for (uint8_t p = 0; p < passes; p++) {
+    float prev = out[0];
+    for (uint8_t i = 1; i + 1 < n; i++) {
+      const float cur = out[i];
+      out[i] = (prev + 2.0f * cur + out[i + 1]) * 0.25f;
+      prev = cur;
+    }
+  }
+  return n;
+}
+
+static float histSmooth(const float* s, int n, float fi) {
   int i1 = (int)fi;
   if (i1 < 0) i1 = 0;
   if (i1 > n - 1) i1 = n - 1;
@@ -1043,14 +1102,38 @@ static float histSmooth(const SlotHistory& hist, float fi) {
   const int i0 = i1 > 0 ? i1 - 1 : 0;
   const int i2 = i1 + 1 < n ? i1 + 1 : n - 1;
   const int i3 = i1 + 2 < n ? i1 + 2 : n - 1;
-  const float p0 = pcHistoryAt(hist, (uint8_t)i0), p1 = pcHistoryAt(hist, (uint8_t)i1);
-  const float p2 = pcHistoryAt(hist, (uint8_t)i2), p3 = pcHistoryAt(hist, (uint8_t)i3);
+  const float p0 = s[i0], p1 = s[i1];
+  const float p2 = s[i2], p3 = s[i3];
   const float v = 0.5f * ((2.0f * p1) +
                           (-p0 + p2) * t +
                           (2.0f * p0 - 5.0f * p1 + 4.0f * p2 - p3) * t * t +
                           (-p0 + 3.0f * p1 - 3.0f * p2 + p3) * t * t * t);
-  const float lo = p1 < p2 ? p1 : p2, hi = p1 < p2 ? p2 : p1;
+  // Clamp to the four-point neighbourhood, NOT to [p1,p2]. Pinning to the
+  // segment holds every run of equal samples perfectly flat and then jumps at
+  // the riser, which is exactly what turns a quantised series into flat blocks.
+  // The wider bound lets a plateau ease into the next one while still keeping
+  // the spline inside the data, so it cannot overshoot below zero either.
+  float lo = p0, hi = p0;
+  if (p1 < lo) lo = p1;
+  if (p1 > hi) hi = p1;
+  if (p2 < lo) lo = p2;
+  if (p2 > hi) hi = p2;
+  if (p3 < lo) lo = p3;
+  if (p3 > hi) hi = p3;
   return v < lo ? lo : (v > hi ? hi : v);
+}
+
+// Screen-space Q8 y for one chart column, clamped into the plot.
+static inline int32_t glassChartY(const float* s, int n, float fi,
+                                  float lo, float span, int32_t hQ8) {
+  const float last = (float)(n - 1);
+  if (fi > last) fi = last;
+  if (fi < 0.0f) fi = 0.0f;
+  const float v = histSmooth(s, n, fi);
+  int32_t y = hQ8 - (int32_t)(((v - lo) / span) * (float)hQ8);
+  if (y < 0) y = 0;
+  if (y > hQ8) y = hQ8;
+  return y;
 }
 
 // Antialiased chart on glass: a vertical gradient area fill that blends into
@@ -1079,6 +1162,11 @@ static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
   const int32_t hQ8 = ((int32_t)(h - 1)) << 8;
   int32_t yLast = 0;
 
+  // Own copy of the series so the optional low pass cannot touch the ring the
+  // readings are printed from.
+  float series[PC_HISTORY_LEN];
+  const int n = (int)buildChartSeries(hist, series, chartSmoothing);
+
   // The pane colour under the plot depends only on the row, so evaluate it
   // once per row rather than once per pixel. Measured on the S3: leaving this
   // in the inner loop cost 69 ms per Glass Tiles frame (26k calls, each with
@@ -1094,39 +1182,70 @@ static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
   const uint8_t AREA_TOP = 150;   // fill alpha just under the stroke
   const uint8_t AREA_BOT = 26;    // ...and at the floor of the plot
 
-  // Column geometry first, so the stroke can span between neighbours.
+  // Column geometry first, so the stroke can span between neighbours. The half
+  // stroke is a touch over one pixel: thinner reads as a dotted line once a
+  // steep segment spreads it across many rows.
+  static const int32_t STROKE_HALF_Q8 = 170;   // ~1.3px stroke
   int32_t yPrev = 0;
   const float denom = (w > 1) ? (float)(w - 1) : 1.0f;
   // Lag the window by one sample and slide it forward across the packet
   // interval: at scroll 0 the window ends at the second-newest reading, at
   // full scroll it ends exactly on the newest - which is the moment the next
   // packet lands. Continuous motion with no seam at the handover.
-  const bool glide = (hist.count >= 3);
-  const float step = glide ? (float)(hist.count - 2) / denom
-                           : (float)(hist.count - 1) / denom;
+  const bool glide = (n >= 3);
   const float shift = glide ? ((float)scrollQ8 / 256.0f) : 0.0f;
 
-  for (int16_t xi = 0; xi < w; xi++) {
-    float fi = (float)xi * step + shift;
-    if (fi > (float)(hist.count - 1)) fi = (float)(hist.count - 1);
-    const float v = histSmooth(hist, fi);
-    int32_t yQ8 = hQ8 - (int32_t)(((v - lo) / span) * (float)hQ8);
-    if (yQ8 < 0) yQ8 = 0;
-    if (yQ8 > hQ8) yQ8 = hQ8;
-    if (xi == 0) yPrev = yQ8;
+  // ONE PIXEL IS ALWAYS THE SAME NUMBER OF SAMPLES, whether the ring holds 4
+  // readings or 60. Scaling the window to hist.count instead (what this did
+  // before) re-fitted the whole series across the full width on every packet
+  // while the ring filled, so early on one sample was tens of pixels wide and
+  // the sub-sample glide swung the plot back and forth until the ring was full
+  // about a minute in. Now the newest sample is pinned to the right edge, the
+  // series grows in from the right, and columns older than the data are left as
+  // bare pane.
+  const float step = (float)(PC_HISTORY_LEN - 2) / denom;
+  const float fiRight = (glide ? (float)(n - 2) : (float)(n - 1)) + shift;
+  // First column that has data behind it.
+  int16_t xStart = (int16_t)(w - 1 - (int32_t)(fiRight / step));
+  if (xStart < 0) xStart = 0;
+  if (xStart > w) xStart = w;
 
-    // Stroke spans from the midpoint with the previous column to this sample,
-    // which keeps a steep segment connected without drawing a staircase.
-    const int32_t midPrev = (yPrev + yQ8) / 2;
-    int32_t top = yQ8 < midPrev ? yQ8 : midPrev;
-    int32_t bot = yQ8 > midPrev ? yQ8 : midPrev;
-    top -= 140;   // ~1.1px half-stroke
-    bot += 140;
+  // Each column owns the polyline from its midpoint with the PREVIOUS sample to
+  // its midpoint with the NEXT one. The union of those spans covers the line
+  // with no holes. Spanning only back to the previous midpoint (what this did
+  // before) left the far half of every segment undrawn, so a one-column spike
+  // came out as a fragment floating above the series with a gap beneath it.
+  int32_t yCur = glassChartY(series, n, fiRight - (float)(w - 1 - xStart) * step,
+                             lo, span, hQ8);
+  yPrev = yCur;
+
+  for (int16_t xi = xStart; xi < w; xi++) {
+    const int32_t yNext = (xi + 1 < w)
+      ? glassChartY(series, n, fiRight - (float)(w - 2 - xi) * step, lo, span, hQ8)
+      : yCur;
+
+    const int32_t midPrev = (yPrev + yCur) / 2;
+    const int32_t midNext = (yCur + yNext) / 2;
+    int32_t top = yCur, bot = yCur;
+    if (midPrev < top) top = midPrev;
+    if (midPrev > bot) bot = midPrev;
+    if (midNext < top) top = midNext;
+    if (midNext > bot) bot = midNext;
+
+    // The area starts under the curve AT THIS COLUMN, not under the connecting
+    // segment: keying it off the segment bottom makes the fill bulge sideways
+    // out of every spike.
+    const int32_t fillTop = yCur + STROKE_HALF_Q8;
+    top -= STROKE_HALF_Q8;
+    bot += STROKE_HALF_Q8;
 
     const int16_t px = ox + xi;
-    // Leading-edge fade so a chart that starts inside a pane has no seam.
-    const int32_t edgeA = (fadeIn > 0 && xi < fadeIn)
-      ? ((int32_t)xi * 255) / fadeIn : 255;
+    // Leading-edge fade so a chart that starts inside a pane has no seam. It
+    // rides xStart, not the plot edge: while the ring is still filling the
+    // series begins partway across, and that start is what needs softening.
+    const int16_t rel = xi - xStart;
+    const int32_t edgeA = (fadeIn > 0 && rel < fadeIn)
+      ? ((int32_t)rel * 255) / fadeIn : 255;
 
     for (int16_t yy = 0; yy < h; yy++) {
       const int32_t rowT = ((int32_t)yy) << 8, rowB = rowT + 256;
@@ -1136,12 +1255,13 @@ static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
 
       // Area fill under the stroke, fading with depth.
       int32_t al = -1;
-      if (rowT >= bot) {
-        const int32_t depth = hQ8 > bot ? ((rowT - bot) * 255) / (hQ8 - bot + 1) : 255;
+      if (rowT >= fillTop) {
+        const int32_t depth =
+          hQ8 > fillTop ? ((rowT - fillTop) * 255) / (hQ8 - fillTop + 1) : 255;
         al = AREA_TOP - ((AREA_TOP - AREA_BOT) * depth) / 255;
-      } else if (rowB > bot) {
+      } else if (rowB > fillTop) {
         // Partial row at the fill's top edge.
-        al = (AREA_TOP * ((rowB - bot) * 255 / 256)) / 255;
+        al = (AREA_TOP * ((rowB - fillTop) * 255 / 256)) / 255;
       }
       if (al > 0) {
         al = (al * edgeA) / 255;
@@ -1153,15 +1273,21 @@ static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
       const int32_t b = rowB < bot ? rowB : bot;
       int32_t cov = b - a;
       if (cov > 0) {
-        if (cov > 256) cov = 256;
+        // Same uint8_t trap as the duo meter: clamping to 256 wrapped every
+        // FULLY covered row to alpha 0, so the solid middle of the stroke was
+        // never drawn. Only the antialiased partial rows at the very top and
+        // bottom of a segment survived, which is what shredded steep edges into
+        // detached specks.
+        if (cov > 255) cov = 255;
         cov = (cov * edgeA) / 255;
         if (cov > 0) base = rgbMix(base, lineInk, (uint8_t)cov);
       }
 
       gcPixel(c, px, oy + yy, rgbTo565(base, px, oy + yy));
     }
-    yPrev = yQ8;
-    if (xi == w - 1) yLast = yQ8;
+    if (xi == w - 1) yLast = yCur;
+    yPrev = yCur;
+    yCur = yNext;
   }
 
   // Endpoint marker: a soft round dot rather than the hard filled circle the
@@ -1432,13 +1558,15 @@ static void drawTilesScreen(bool fr) {
   // push every second, and repainting ~25% of every chart's pixels each
   // second reads as screen-wide shimmer on the panel. Values stay live; the
   // charts advance every SPARK_REDRAW_MS. Capture never consumes the pacing.
-  static uint32_t lastSparkMs = 0;
-  bool sparkTick = true;
-  if (!gCaptureRender) {
-    sparkTick = (pcData.lastReceived != 0) &&
-                (millis() - lastSparkMs >= (uint32_t)sparkRedrawSec * 1000UL);
-    if (sparkTick) lastSparkMs = millis();
-  }
+  // Charts animate at the frame rate, exactly like the glass faces: the plot
+  // glides a fraction of a sample between packets instead of stepping a whole
+  // column once per sparkRedrawSec. `advance` still means "a new reading
+  // landed", which is the only thing the bounds smoothing may react to, and
+  // the reading itself is never eased - motion belongs to the chart.
+  advanceChartMotion();
+  const bool sparkTick = true;
+  const bool advance = gCaptureRender ? false : gNewSample;
+  const uint16_t scroll = gCaptureRender ? 0 : gScrollQ8;
 
   const uint8_t cols = (n <= 2) ? 1 : 2;
   const uint8_t rows = (n + cols - 1) / cols;
@@ -1548,7 +1676,7 @@ static void drawTilesScreen(bool fr) {
 
     if ((sparkTick || fr) && cardH - headH - 10 >= 8) {
       drawSparkline(pcHistory[vis[i].slotIdx], vis[i].slotIdx, x + 8, y + headH + 2,
-                    cardW - 16, cardH - headH - 10, lineColor, cardBg, sparkTick);
+                    cardW - 16, cardH - headH - 10, lineColor, cardBg, advance, scroll);
     }
   }
 }
@@ -1584,13 +1712,15 @@ static void drawHeroScreen(bool fr) {
     return;
   }
 
-  static uint32_t lastSparkMs = 0;
-  bool sparkTick = true;
-  if (!gCaptureRender) {
-    sparkTick = (pcData.lastReceived != 0) &&
-                (millis() - lastSparkMs >= (uint32_t)sparkRedrawSec * 1000UL);
-    if (sparkTick) lastSparkMs = millis();
-  }
+  // Charts animate at the frame rate, exactly like the glass faces: the plot
+  // glides a fraction of a sample between packets instead of stepping a whole
+  // column once per sparkRedrawSec. `advance` still means "a new reading
+  // landed", which is the only thing the bounds smoothing may react to, and
+  // the reading itself is never eased - motion belongs to the chart.
+  advanceChartMotion();
+  const bool sparkTick = true;
+  const bool advance = gCaptureRender ? false : gNewSample;
+  const uint16_t scroll = gCaptureRender ? 0 : gScrollQ8;
 
   // 2/5 of a 240px panel is 96px, which the hero band needs. The same ratio on
   // a 480px panel is 192px and reads as a slab: the value and chart do not grow
@@ -1660,10 +1790,10 @@ static void drawHeroScreen(bool fr) {
     if (n >= 2) {
       const int16_t graphX = w / 2 - 10;
       drawSparkline(pcHistory[vis[0].slotIdx], vis[0].slotIdx, graphX, 10,
-                    w - graphX - 10, heroH - 20, heroColor, bg, sparkTick);
+                    w - graphX - 10, heroH - 20, heroColor, bg, advance, scroll);
     } else {
       drawSparkline(pcHistory[vis[0].slotIdx], vis[0].slotIdx, 12, heroH + 8,
-                    w - 24, gridH - heroH - 16, heroColor, bg, sparkTick);
+                    w - 24, gridH - heroH - 16, heroColor, bg, advance, scroll);
     }
   }
 
@@ -1770,13 +1900,15 @@ static void drawStripsScreen(bool fr) {
     return;
   }
 
-  static uint32_t lastSparkMs = 0;
-  bool sparkTick = true;
-  if (!gCaptureRender) {
-    sparkTick = (pcData.lastReceived != 0) &&
-                (millis() - lastSparkMs >= (uint32_t)sparkRedrawSec * 1000UL);
-    if (sparkTick) lastSparkMs = millis();
-  }
+  // Charts animate at the frame rate, exactly like the glass faces: the plot
+  // glides a fraction of a sample between packets instead of stepping a whole
+  // column once per sparkRedrawSec. `advance` still means "a new reading
+  // landed", which is the only thing the bounds smoothing may react to, and
+  // the reading itself is never eased - motion belongs to the chart.
+  advanceChartMotion();
+  const bool sparkTick = true;
+  const bool advance = gCaptureRender ? false : gNewSample;
+  const uint16_t scroll = gCaptureRender ? 0 : gScrollQ8;
   if (!(sparkTick || fr)) return;
 
   const int16_t rowH = gridH / n;
@@ -1810,7 +1942,7 @@ static void drawStripsScreen(bool fr) {
       tft.fillRect(0, y, w, rowH, bg);
     }
     sparkPlot(g, pcHistory[vis[i].slotIdx], vis[i].slotIdx,
-              0, oy + 2, w, rowH - 4, lineColor, sparkTick);
+              0, oy + 2, w, rowH - 4, lineColor, advance, scroll);
     if (i) g.drawFastHLine(0, oy, w, dispSettings.trackColor);
 
     // Overlay text draws foreground-only: the lane is composed fresh, so
@@ -1893,13 +2025,15 @@ static void drawDuoScreen(bool fr) {
     return;
   }
 
-  static uint32_t lastSparkMs = 0;
-  bool sparkTick = true;
-  if (!gCaptureRender) {
-    sparkTick = (pcData.lastReceived != 0) &&
-                (millis() - lastSparkMs >= (uint32_t)sparkRedrawSec * 1000UL);
-    if (sparkTick) lastSparkMs = millis();
-  }
+  // Charts animate at the frame rate, exactly like the glass faces: the plot
+  // glides a fraction of a sample between packets instead of stepping a whole
+  // column once per sparkRedrawSec. `advance` still means "a new reading
+  // landed", which is the only thing the bounds smoothing may react to, and
+  // the reading itself is never eased - motion belongs to the chart.
+  advanceChartMotion();
+  const bool sparkTick = true;
+  const bool advance = gCaptureRender ? false : gNewSample;
+  const uint16_t scroll = gCaptureRender ? 0 : gScrollQ8;
 
   const uint8_t bands = (n >= 2) ? 2 : 1;
   // Two bands at 32% each take 64% of the panel. That is fine at 240px, but on
@@ -1971,11 +2105,11 @@ static void drawDuoScreen(bool fr) {
       if (n >= 2) {
         drawSparkline(pcHistory[vis[b].slotIdx], vis[b].slotIdx,
                       chartX, y + 8, w - chartX - 8, bandH - 18,
-                      s.arcColor, bg, sparkTick);
+                      s.arcColor, bg, advance, scroll);
       } else {
         drawSparkline(pcHistory[vis[b].slotIdx], vis[b].slotIdx,
                       12, bandH + 8, w - 24, gridH - bandH - 16,
-                      s.arcColor, bg, sparkTick);
+                      s.arcColor, bg, advance, scroll);
       }
     }
   }
@@ -2277,7 +2411,7 @@ static void drawGlassTilesScreen(bool fr) {
   // Glass charts glide continuously rather than stepping every sparkRedrawSec:
   // they are recomposed each frame at the faster glass cadence, and only the
   // bounds smoothing is gated on an actual new packet.
-  glassAdvanceMotion();
+  advanceChartMotion();
   const bool chartTick = true;
   const bool advance = gCaptureRender ? false : gNewSample;
   const uint16_t scroll = gCaptureRender ? 0 : gScrollQ8;
@@ -2393,7 +2527,7 @@ static void drawGlassDuoScreen(bool fr) {
     return;
   }
 
-  glassAdvanceMotion();
+  advanceChartMotion();
   const bool chartTick = true;
   const bool advance = gCaptureRender ? false : gNewSample;
   const uint16_t scroll = gCaptureRender ? 0 : gScrollQ8;
@@ -2565,7 +2699,11 @@ static void drawGlassDuoScreen(bool fr) {
         const int32_t pxL = (int32_t)dx << 8;
         int32_t cov = fillQ8 - pxL;
         if (cov < 0) cov = 0;
-        if (cov > 256) cov = 256;
+        // 255, NOT 256: the mix alpha is a uint8_t, so a full-coverage 256
+        // truncated to 0 and every solid pixel of the bar drew as pure track.
+        // Only the one partially covered pixel at the fill boundary survived,
+        // which is why the meter read as a lone tick instead of a bar.
+        if (cov > 255) cov = 255;
         for (int16_t dy = 0; dy < 2; dy++) {
           const int16_t qx = gx + mx + dx, qy = gy + my + dy;
           Rgb base = glassPaneRow(y + my + dy, (int16_t)(my + dy), pillH,
@@ -2715,13 +2853,27 @@ void updateDisplay() {
     return;
   }
 
-  // The glass faces animate their charts, so they need a frame rate the eye
-  // reads as motion rather than the 4 Hz the static faces are paced at. Only
-  // while the monitor screen is actually showing a live feed - an idle clock
-  // or an offline panel keeps the calm cadence.
-  const uint32_t frameInterval =
-    (currentScreen == SCREEN_MONITOR && pcData.online &&
-     styleUsesGlass(displayStyle)) ? GLASS_UPDATE_MS : DISPLAY_UPDATE_MS;
+  // EVERY monitor face animates its charts now, not just the glass pair, so
+  // they all need a frame rate the eye reads as motion rather than the 4 Hz the
+  // static screens are paced at. Only while the monitor screen is actually
+  // showing a live feed - an idle clock or an offline panel keeps the calm
+  // cadence, where there is nothing to animate anyway.
+  //
+  // Pace off what the LAST frame actually cost so a heavy face can never run
+  // back to back and starve WiFi and the web server. Measured on the C3 at
+  // 240x240 with 7 bound slots: Big 0.7 ms, Pulse 0.8 ms, Hero 7 ms, Duo 13 ms,
+  // Tiles 21 ms, Liquid 46 ms, Aero 96 ms - but Strips 135 ms, because it
+  // composes a full-width sprite per lane. A fixed 100 ms would leave that face
+  // permanently overrunning. Cheap faces still get the full animation rate; an
+  // expensive one degrades to a slower glide instead of eating the loop. This
+  // also protects the bigger panels, where every face costs more.
+  uint32_t frameInterval = GLASS_UPDATE_MS;
+  const uint32_t lastCostMs = gFrameUs / 1000;
+  const uint32_t paced = lastCostMs + (lastCostMs >> 1);   // cost + 50% headroom
+  if (paced > frameInterval) frameInterval = paced;
+  if (frameInterval > 500) frameInterval = 500;
+  if (!(currentScreen == SCREEN_MONITOR && pcData.online))
+    frameInterval = DISPLAY_UPDATE_MS;
   if (!forceRedraw && (now - lastUpdate < frameInterval)) return;
   lastUpdate = now;
 

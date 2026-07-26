@@ -159,6 +159,8 @@
 // and starve WiFi. The chart only scrolls ~1.7 px/second, so 10 sub-steps per
 // pixel is already continuous motion - a faster rate would burn CPU redrawing
 // a picture that has not visibly changed.
+// Named for the glass faces that needed it first; it now paces EVERY monitor
+// face, since they all animate their charts.
 #define GLASS_UPDATE_MS            100
 #define SPARK_REDRAW_MS           3000    // min ms between sparkline repaints (calm charts)
 #define DISPLAY_STATE_TIMEOUT_MS   60000  // 60s timeout for intermediate display states

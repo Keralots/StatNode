@@ -123,9 +123,21 @@ static long clampedArg(const char* name, long current, long minValue, long maxVa
 }
 
 static uint8_t displayStyleArg(const char* name, uint8_t current) {
-  const uint8_t requested =
-    (uint8_t)clampedArg(name, current, STYLE_RETIRED, STYLE_COUNT - 1);
-  return normalizeDisplayStyle(requested);
+  // A BLANK or non-numeric "style" field parses to 0 (STYLE_RETIRED), and
+  // normalizeDisplayStyle turns 0 into STYLE_DEFAULT - so one empty select
+  // silently threw the face back to Tiles, which is exactly the "style keeps
+  // resetting to 2" report. THREE forms carry name="style" (Display, Layout,
+  // Colors), so any of them submitted before its select was populated did it.
+  // Absent, blank or out of range now means KEEP WHAT IS SET; only a real style
+  // value changes it. STYLE_RETIRED stays accepted from NVS (loadSettings
+  // migrates it) but is no longer something a form can ask for.
+  if (!server.hasArg(name)) return normalizeDisplayStyle(current);
+  const String raw = server.arg(name);
+  if (raw.length() == 0) return normalizeDisplayStyle(current);
+  const long requested = raw.toInt();
+  if (requested < STYLE_BIG_NUMBERS || requested > (long)STYLE_COUNT - 1)
+    return normalizeDisplayStyle(current);
+  return normalizeDisplayStyle((uint8_t)requested);
 }
 
 static void addHtmlColor(JsonObject object, const char* key, uint16_t color) {
@@ -165,6 +177,7 @@ static void handleApiConfig() {
   display["brightness"] = brightness;
   display["smoothing"] = dispSettings.gaugeSmoothing;
   display["sparkSeconds"] = sparkRedrawSec;
+  display["chartSmooth"] = chartSmoothing;
   display["tempScale"] = dispSettings.tempScaleMax;
   display["powerScale"] = dispSettings.powerScaleW;
   display["warnThreshold"] = dispSettings.warnThresholdPct;
@@ -298,6 +311,7 @@ static void handleConfigExport() {
   display["brightness"] = brightness;
   display["smoothing"] = dispSettings.gaugeSmoothing;
   display["sparkSeconds"] = sparkRedrawSec;
+  display["chartSmooth"] = chartSmoothing;
   display["tempScale"] = dispSettings.tempScaleMax;
   display["powerScale"] = dispSettings.powerScaleW;
   display["warnThreshold"] = dispSettings.warnThresholdPct;
@@ -467,6 +481,8 @@ static void handleSaveDisplay() {
   brightness = (uint8_t)clampedArg("brightness", brightness, 0, 255);
   dispSettings.gaugeSmoothing = (uint8_t)clampedArg("smoothing", dispSettings.gaugeSmoothing, 0, 3);
   sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
+  chartSmoothing =
+    (uint8_t)clampedArg("chartSmooth", chartSmoothing, 0, CHART_SMOOTH_MAX);
   dispSettings.tempScaleMax = (uint16_t)clampedArg("tempScale", dispSettings.tempScaleMax, 1, 500);
   dispSettings.powerScaleW = (uint16_t)clampedArg("powerScale", dispSettings.powerScaleW, 1, 65535);
   dispSettings.warnThresholdPct = (uint8_t)clampedArg("warnThreshold", dispSettings.warnThresholdPct, 0, 100);
@@ -538,37 +554,50 @@ struct ColorPreset {
   uint16_t slots[NUM_GAUGE_SLOTS];
 };
 
+// Every preset must fill ALL NUM_GAUGE_SLOTS accent colours. A short
+// initialiser list zero-fills the rest, and 0x0000 is BLACK - that is what
+// blanked slots 7 and 8 when the slot count went 6 -> 8 while these lists
+// stayed at six. Raising the count must be a deliberate edit here too.
+static_assert(NUM_GAUGE_SLOTS == 8,
+              "Slot count changed: extend every kPresets slots[] list below.");
+
 static const ColorPreset kPresets[] = {
   // Factory defaults (config.h palette).
   { "default", CLR_BG, CLR_TRACK, CLR_RED, CLR_TEXT, CLR_TEXT_DIM,
     CLR_TEXT, CLR_TEXT_DIM, CLR_TEXT_DIM, CLR_CARD,
     THEME_LABEL_CLASSIC, 0,
-    { CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED } },
+    { CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED,
+      CLR_VIOLET, CLR_ROSE } },
   // "Modern": the colorblind-validated categorical set from the redesign.
   { "modern", 0x1082 /*#101214*/, 0x2146 /*#202830*/, 0xE249 /*#E5484D*/,
     0xF7BE /*#F5F5F5*/, 0x9D35 /*#9AA4AD*/,
     0xF7BE /*#F5F5F5*/, 0xBE19 /*#B8C3CC*/, 0x84B4 /*#8695A1*/,
     0x10C4 /*#151A20*/, THEME_LABEL_CUSTOM, 12,
     { 0x3C3C /*#3987E5*/, 0x0400 /*#008300*/, 0xD290 /*#D55181*/,
-      0xCC20 /*#C98500*/, 0x1CEE /*#199E70*/, 0xDAC4 /*#D95926*/ } },
+      0xCC20 /*#C98500*/, 0x1CEE /*#199E70*/, 0xDAC4 /*#D95926*/,
+      CLR_VIOLET, CLR_CYAN } },
   { "oled", CLR_BG, 0x1082 /*#101214*/, CLR_RED, CLR_TEXT, CLR_TEXT_DIM,
     CLR_TEXT, CLR_TEXT_DIM, CLR_TEXT_DIM, CLR_BG,
     THEME_LABEL_ACCENT, 12,
-    { CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED } },
+    { CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED,
+      CLR_VIOLET, CLR_ROSE } },
   { "slate", 0x10C4 /*#101820*/, 0x3209 /*#31404C*/, 0xFAEB /*#FF5D5D*/,
     0xF7BE /*#F2F5F7*/, 0x84B4 /*#8695A1*/,
     0xF7BE /*#F2F5F7*/, 0xBE19 /*#B8C3CC*/, 0x84B4 /*#8695A1*/,
     0x1905 /*#18232D*/, THEME_LABEL_CUSTOM, 12,
-    { 0x3C3C, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_ORANGE, 0xF81F } },
+    { 0x3C3C, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_ORANGE, 0xF81F,
+      CLR_VIOLET, CLR_ROSE } },
   { "amber", 0x1040 /*#100B05*/, 0x4183 /*#44321D*/, 0xFAE8 /*#FF5D45*/,
     0xFF37 /*#FFE7BD*/, 0xAC4A /*#AC8956*/,
     0xFF37 /*#FFE7BD*/, 0xF5CB /*#F1B85E*/, 0xAC4A /*#AC8956*/,
     0x20A1 /*#21170B*/, THEME_LABEL_CUSTOM, 12,
-    { CLR_GOLD, CLR_ORANGE, CLR_YELLOW, CLR_RED, 0xF5CB, 0xAC4A } },
+    { CLR_GOLD, CLR_ORANGE, CLR_YELLOW, CLR_RED, 0xF5CB, 0xAC4A,
+      0xFDCE /*#FFB870*/, 0xCBC5 /*#C87A2A*/ } },
   { "contrast", CLR_BG, 0x52AA /*#555555*/, CLR_RED, CLR_TEXT, CLR_YELLOW,
     CLR_TEXT, CLR_YELLOW, CLR_TEXT, 0x1082 /*#101010*/,
     THEME_LABEL_AUTO, 0,
-    { CLR_CYAN, CLR_YELLOW, CLR_GREEN, 0xF81F, CLR_ORANGE, CLR_RED } },
+    { CLR_CYAN, CLR_YELLOW, CLR_GREEN, 0xF81F, CLR_ORANGE, CLR_RED,
+      CLR_VIOLET, CLR_TEXT } },
 };
 
 static void handleSaveColors() {
@@ -772,6 +801,7 @@ static void handleConfigImport() {
   uint8_t nextDisplayStyle = displayStyle;
   uint8_t nextClockFace = clockFace;
   uint8_t nextSparkRedrawSec = sparkRedrawSec;
+  uint8_t nextChartSmoothing = chartSmoothing;
   uint8_t nextBrightness = brightness;
   bool flag = false;
 
@@ -806,6 +836,7 @@ static void handleConfigImport() {
   READ_INT(display, "brightness", 0, 255, nextBrightness, uint8_t);
   READ_INT(display, "smoothing", 0, 3, nextDisplay.gaugeSmoothing, uint8_t);
   READ_INT(display, "sparkSeconds", 1, 60, nextSparkRedrawSec, uint8_t);
+  READ_INT(display, "chartSmooth", 0, CHART_SMOOTH_MAX, nextChartSmoothing, uint8_t);
   READ_INT(display, "tempScale", 1, 500, nextDisplay.tempScaleMax, uint16_t);
   READ_INT(display, "powerScale", 1, 65535, nextDisplay.powerScaleW, uint16_t);
   READ_INT(display, "warnThreshold", 0, 100,
@@ -956,6 +987,7 @@ static void handleConfigImport() {
   displayStyle = nextDisplayStyle;
   clockFace = nextClockFace;
   sparkRedrawSec = nextSparkRedrawSec;
+  chartSmoothing = nextChartSmoothing;
   brightness = nextBrightness;
   saveSettings();
 
@@ -1126,41 +1158,59 @@ static void handleScreenshot() {
   // colors" report. Prefer 16-bit, fall back to 8-bit, then stick with it.
   static lgfx::LGFX_Sprite spr;
   static int16_t capW = 0, capH = 0;
+  static int8_t capDepth = 0;      // 0 = not probed yet, else 16 or 8
+  static bool capPsram = false;
   if (capW != w || capH != h) {
     spr.deleteSprite();
+    capDepth = 0;
+  }
+  // The DEPTH decision is what has to be sticky (a per-request probe made the
+  // preview flip between true colour and the 8-bit green tint); the BUFFER does
+  // not. On a part without PSRAM a 240x240 sprite is 57.6 KB of internal heap,
+  // and holding it for the rest of uptime left the web server unable to
+  // allocate for new connections - portal saves then failed in the browser with
+  // "Failed to fetch" while curl still squeezed through. So: probe once, keep
+  // the answer, hand the memory back after every capture.
+  if (!spr.getBuffer()) {
     bool ok = false;
-    // PSRAM FIRST on any board that has it. This sprite is allocated once and
-    // deliberately never freed (that is what stopped the preview flipping
-    // between true colour and the 8-bit green tint between refreshes), so on a
-    // 240x240 panel it was holding 115 KB of INTERNAL heap for the rest of
-    // uptime. Measured on the S3: free heap 18 KB with a 7.6 KB largest block
-    // once the portal preview had run, which left the web server unable to
-    // allocate for new connections - portal saves failed in the browser with
-    // "failed to fetch" while curl still squeezed through. Rendering into PSRAM
-    // is slower, which this path does not care about, and it keeps internal heap
-    // for WiFi/HTTP. Runtime psramFound() rather than BOARD_HAS_PSRAM so a board
-    // whose PSRAM did not come up still gets the internal fallbacks.
-    if (psramFound()) {
-      spr.setPsram(true);
-      spr.setColorDepth(16);
+    if (capDepth != 0) {
+      spr.setPsram(capPsram);
+      spr.setColorDepth(capDepth);
       ok = spr.createSprite(w, h);
     }
-    if (!ok) {
-      // No PSRAM (e.g. the C3) or the PSRAM allocation failed: original path.
-      // 240x240 fits internal at 16-bit (115 KB) or 8-bit (57.6 KB). A 320x480
-      // frame needs 307 KB / 154 KB contiguous and will not fit either, so such
-      // a board legitimately reports 503.
-      spr.setPsram(false);
-      spr.setColorDepth(16);
-      ok = spr.createSprite(w, h);
-      if (!ok) {
-        spr.setColorDepth(8);
+    if (!ok && capDepth == 0) {
+      // PSRAM FIRST on any board that has it. Rendering into PSRAM is slower,
+      // which this path does not care about, and it keeps internal heap for
+      // WiFi/HTTP - so a PSRAM buffer is worth KEEPING between requests, while
+      // an internal one is not. Runtime psramFound() rather than
+      // BOARD_HAS_PSRAM so a board whose PSRAM did not come up still gets the
+      // internal fallbacks.
+      if (psramFound()) {
+        spr.setPsram(true);
+        spr.setColorDepth(16);
         ok = spr.createSprite(w, h);
+        if (ok) { capDepth = 16; capPsram = true; }
+      }
+      if (!ok) {
+        // No PSRAM (e.g. the C3) or the PSRAM allocation failed. 240x240 fits
+        // internal at 16-bit (115 KB) or 8-bit (57.6 KB). A 320x480 frame needs
+        // 307 KB / 154 KB contiguous and will not fit either, so such a board
+        // legitimately reports 503.
+        spr.setPsram(false);
+        spr.setColorDepth(16);
+        ok = spr.createSprite(w, h);
+        if (ok) { capDepth = 16; capPsram = false; }
+        if (!ok) {
+          spr.setColorDepth(8);
+          ok = spr.createSprite(w, h);
+          if (ok) { capDepth = 8; capPsram = false; }
+        }
       }
     }
     if (!ok) {
       spr.setPsram(false);
       capW = capH = 0;
+      capDepth = 0;
       server.send(503, "text/plain", "Not enough RAM for capture");
       return;
     }
@@ -1187,8 +1237,7 @@ static void handleScreenshot() {
 
   uint8_t* row = (uint8_t*)malloc(rowBytes);
   if (!row) {
-    // Keep the persistent sprite - deleting it while capW/capH stay set would
-    // make the next request render through a bufferless sprite.
+    if (!capPsram) spr.deleteSprite();
     server.send(503, "text/plain", "Not enough RAM for row buffer");
     return;
   }
@@ -1232,7 +1281,10 @@ static void handleScreenshot() {
   if (!ok) client.stop();
 
   free(row);
-  // Sprite intentionally NOT deleted - see the allocation comment above.
+  // Internal-heap capture buffers go straight back to the allocator; only a
+  // PSRAM one is worth keeping. The remembered depth means the next request
+  // still renders identically.
+  if (!capPsram) spr.deleteSprite();
 }
 
 // ---------------------------------------------------------------------------

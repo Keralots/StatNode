@@ -16,6 +16,7 @@ TouchSettings touchSettings;
 LedSettings ledSettings;
 ThemeSettings themeSettings;
 uint8_t displayStyle = STYLE_DEFAULT;
+uint8_t chartSmoothing = 0;
 uint8_t clockFace = CLOCK_FACE_STANDARD;
 uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
@@ -244,6 +245,8 @@ void loadSettings() {
   sparkRedrawSec = prefs.getUChar("sparks", SPARK_REDRAW_MS / 1000);
   if (sparkRedrawSec < 1) sparkRedrawSec = 1;
   if (sparkRedrawSec > 60) sparkRedrawSec = 60;
+  chartSmoothing = prefs.getUChar("chartsm", 0);
+  if (chartSmoothing > CHART_SMOOTH_MAX) chartSmoothing = 0;
   backlightSettings.nightEnabled = backlightSettings.nightEnabled ? 1 : 0;
   backlightSettings.nightOfflineOff = backlightSettings.nightOfflineOff ? 1 : 0;
   if (backlightSettings.nightStartMinute >= 24 * 60)
@@ -322,6 +325,7 @@ void saveSettings() {
   prefs.putUChar("style", displayStyle);
   prefs.putUChar("clockface", clockFace);
   prefs.putUChar("sparks", sparkRedrawSec);
+  prefs.putUChar("chartsm", chartSmoothing);
   prefs.end();
 }
 

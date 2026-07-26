@@ -235,6 +235,12 @@ extern ThemeSettings themeSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
 extern uint8_t clockFace;      // ClockFace value
 extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
+// Chart low pass, 0=Off 1=Light 2=Medium 3=Heavy. Rounds one-sample needles on
+// the glass charts at the cost of shaving real peaks. Its OWN NVS key for the
+// same reason as displayStyle: growing the "disp" blob resizes it and a size
+// mismatch resets every display setting on the next OTA.
+extern uint8_t chartSmoothing;
+constexpr uint8_t CHART_SMOOTH_MAX = 3;
 
 void loadSettings();
 void saveSettings();
