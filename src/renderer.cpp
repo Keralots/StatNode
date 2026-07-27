@@ -813,14 +813,27 @@ static void drawSparkline(const SlotHistory& hist, uint8_t slotIdx,
 //      one colour, so every region that updates is composed and blitted whole.
 // ---------------------------------------------------------------------------
 
-// Working colour space for the compositor. int16_t rather than uint8_t so an
-// intermediate blend can overshoot without wrapping.
+// Working colour space for the compositor: SUBPIXEL channels, 1/16 of an 8-bit
+// level each, so 0..RGB_ONE*255. int16_t rather than uint8_t so an intermediate
+// blend can overshoot without wrapping.
+//
+// The fraction is the whole point. Every gradient here is slow - a card is ~115
+// rows and its colour travels maybe 14 levels over that - so at plain 8 bits the
+// COMPOSITE was already a staircase before the dither ever saw it: eight rows of
+// one integer, a jump, eight more. The dither can only stipple between the two
+// 565 levels it is handed, so it reproduced that staircase faithfully and the
+// panel showed one contour line per 8-bit level. Carrying four fractional bits
+// makes the ramp advance every row and the dither turns it into a true gradient.
+// Measured on a 320x480 Glass Tiles card: longest flat run 13 rows -> 3.
+static const int16_t RGB_ONE = 16;                // subpixel units per level
+static const int16_t RGB_MAX = 255 * RGB_ONE;     // 4080
+
 struct Rgb { int16_t r, g, b; };
 
 static inline Rgb rgbFrom565(uint16_t c) {
-  return Rgb{ (int16_t)((((c >> 11) & 0x1F) * 255 + 15) / 31),
-              (int16_t)((((c >> 5) & 0x3F) * 255 + 31) / 63),
-              (int16_t)(((c & 0x1F) * 255 + 15) / 31) };
+  return Rgb{ (int16_t)((((c >> 11) & 0x1F) * RGB_MAX + 15) / 31),
+              (int16_t)((((c >> 5) & 0x3F) * RGB_MAX + 31) / 63),
+              (int16_t)(((c & 0x1F) * RGB_MAX + 15) / 31) };
 }
 
 // alpha is the weight of b, 0..255.
@@ -830,17 +843,26 @@ static inline Rgb rgbMix(const Rgb& a, const Rgb& b, uint8_t alpha) {
               (int16_t)(a.b + (((int32_t)b.b - a.b) * alpha >> 8)) };
 }
 
-static const Rgb RGB_WHITE = { 255, 255, 255 };
+// Same blend with the alpha itself in 1/256ths, for the ramps whose alpha
+// crawls: gloss and bloom move by well under one alpha step per row, and an
+// integer alpha there re-introduces exactly the staircase the subpixel colour
+// space exists to remove. Full weight is 255 << 8.
+static inline Rgb rgbMixQ8(const Rgb& a, const Rgb& b, int32_t alphaQ8) {
+  return Rgb{ (int16_t)(a.r + (((int32_t)b.r - a.r) * alphaQ8 >> 16)),
+              (int16_t)(a.g + (((int32_t)b.g - a.g) * alphaQ8 >> 16)),
+              (int16_t)(a.b + (((int32_t)b.b - a.b) * alphaQ8 >> 16)) };
+}
+static const int32_t ALPHA_FULL_Q8 = 255 << 8;
+
+static const Rgb RGB_WHITE = { RGB_MAX, RGB_MAX, RGB_MAX };
 static const Rgb RGB_BLACK = { 0, 0, 0 };
 
-// 8x8 ordered dither, applied at the 8888 -> 565 store so a long ramp turns
+// 8x8 ordered dither, applied at the subpixel -> 565 store so a long ramp turns
 // its band edges into a stipple the eye integrates back into a smooth
 // gradient. Without it the backdrop shows every one of its ~32 blue steps.
 //
 // 8x8 rather than 4x4: both kill the banding, but a 4x4 cell at this pixel
-// pitch reads as a visible checkerboard on the panel. The threshold is also
-// CENTRED (-32..31) instead of added, so dithering does not lift the whole
-// image half a quantisation step brighter.
+// pitch reads as a visible checkerboard on the panel.
 static const uint8_t kBayer8[64] = {
    0, 32,  8, 40,  2, 34, 10, 42,
   48, 16, 56, 24, 50, 18, 58, 26,
@@ -852,17 +874,22 @@ static const uint8_t kBayer8[64] = {
   63, 31, 55, 23, 61, 29, 53, 21
 };
 
+// The threshold is ADDED, never centred. Ordered dither quantises by TRUNCATION,
+// so the spread has to run 0..(step-1) for the expected output to come back
+// equal to the input; a centred -32..31 threshold instead shifts every channel
+// half a quantisation step DOWN (measured: -3.2/255 of blue across the backdrop)
+// and leaves the top half of each bucket unreachable. One 565 step is 8 levels
+// of red/blue and 4 of green, which in subpixel units is 128 and 64 - hence the
+// 0..126 and 0..63 spreads below.
 static inline uint16_t rgbTo565(const Rgb& c, int16_t x, int16_t y) {
-  const int32_t t = (int32_t)kBayer8[((y & 7) << 3) | (x & 7)] - 32;
-  // One quantisation step of spread: the 5-bit channels step by 8, the 6-bit
-  // green by 4. Any more is noise, any less leaves the band edge visible.
-  int32_t r = c.r + (t >> 3);
-  int32_t g = c.g + (t >> 4);
-  int32_t b = c.b + (t >> 3);
-  if (r < 0) r = 0; else if (r > 255) r = 255;
-  if (g < 0) g = 0; else if (g > 255) g = 255;
-  if (b < 0) b = 0; else if (b > 255) b = 255;
-  return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
+  const int32_t t = (int32_t)kBayer8[((y & 7) << 3) | (x & 7)];
+  int32_t r = (c.r + (t << 1)) >> 7;
+  int32_t g = (c.g + t) >> 6;
+  int32_t b = (c.b + (t << 1)) >> 7;
+  if (r < 0) r = 0; else if (r > 31) r = 31;
+  if (g < 0) g = 0; else if (g > 63) g = 63;
+  if (b < 0) b = 0; else if (b > 31) b = 31;
+  return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
 // Compose target. Writing straight into a sprite's buffer instead of going
@@ -942,17 +969,21 @@ static void glassSkyInit(int16_t h, const Rgb& tint,
 // Two-segment ramp: the knee at 55% keeps the upper half bright enough for the
 // panes to read as sitting ON something while the floor still goes properly
 // dark behind the lowest cards.
+// The interpolation weight is Q8 for the same reason the colour is subpixel: a
+// 480-row backdrop advances well under one alpha step per row, and rounding it
+// to a whole step is what put horizontal contour lines across the wallpaper.
 static inline Rgb glassSkyAt(int16_t y) {
   if (y < 0) y = 0;
   if (y >= gSky.h) y = gSky.h - 1;
   const int32_t knee = ((int32_t)gSky.h * 55) / 100;
   if (y <= knee) {
-    const uint8_t a = knee ? (uint8_t)(((int32_t)y * 255) / knee) : 0;
-    return rgbMix(gSky.top, gSky.mid, a);
+    const int32_t a = knee ? ((int32_t)y * ALPHA_FULL_Q8) / knee : 0;
+    return rgbMixQ8(gSky.top, gSky.mid, a);
   }
   const int32_t span = gSky.h - 1 - knee;
-  const uint8_t a = span > 0 ? (uint8_t)((((int32_t)y - knee) * 255) / span) : 255;
-  return rgbMix(gSky.mid, gSky.bot, a);
+  const int32_t a = span > 0 ? (((int32_t)y - knee) * ALPHA_FULL_Q8) / span
+                             : ALPHA_FULL_Q8;
+  return rgbMixQ8(gSky.mid, gSky.bot, a);
 }
 
 // One dithered row at a time, pushed as an image. drawFastHLine would be one
@@ -985,6 +1016,7 @@ struct GlassStyle {
   uint8_t bloom;     // accent glow rising off the bottom edge
   uint8_t glossA;    // specular peak alpha, 0 = no gloss at all
   uint8_t glossPct;  // specular band height as a % of pane height
+  uint8_t glossBow;  // gloss taken back at the pane's sides, 0 = flat bar
   uint8_t refract;   // rim samples the sky this many rows lower, 0 = off
   uint8_t rimTop;
   uint8_t rimSide;
@@ -992,15 +1024,51 @@ struct GlassStyle {
 };
 
 // Vista: polished. A bright specular arc, a hard bevel underneath, warm bloom.
+// glossA and glossBow are the portal's two Glass surface sliders, so this is a
+// template - take a copy through glassAero() rather than using it directly.
 static const GlassStyle GLASS_AERO = {
-  /*lift*/ 26, /*tint*/ 30, /*bloom*/ 30, /*glossA*/ 88, /*glossPct*/ 44,
-  /*refract*/ 0, /*rimTop*/ 120, /*rimSide*/ 34, /*rimBot*/ -76
+  /*lift*/ 26, /*tint*/ 30, /*bloom*/ 30, /*glossA*/ 80, /*glossPct*/ 44,
+  /*glossBow*/ 40, /*refract*/ 0, /*rimTop*/ 120, /*rimSide*/ 34, /*rimBot*/ -76
 };
-// Modern: edge-lit, no gloss, light wrapping under the bottom edge.
+// Modern: edge-lit, no gloss, light wrapping under the bottom edge. The
+// highlight sliders do not reach here on purpose: this face's whole identity is
+// that its edges are lit and its FACE is not.
 static const GlassStyle GLASS_LIQUID = {
   /*lift*/ 30, /*tint*/ 26, /*bloom*/ 18, /*glossA*/ 0, /*glossPct*/ 0,
-  /*refract*/ 6, /*rimTop*/ 132, /*rimSide*/ 72, /*rimBot*/ 54
+  /*glossBow*/ 0, /*refract*/ 6, /*rimTop*/ 132, /*rimSide*/ 72, /*rimBot*/ 54
 };
+
+// Portal preview override. It shadows the persisted settings rather than
+// writing them, so a slider drag costs no NVS write and /api/config still
+// reports what is stored - which is what lets Revert put the panel back.
+static bool gGlassPreview = false;
+static uint8_t gGlassPvGloss = 0, gGlassPvBow = 0, gGlassPvFill = 0;
+
+void setGlassPreview(bool on, uint8_t glossPct, uint8_t bowPct, uint8_t fillPct) {
+  gGlassPreview = on;
+  gGlassPvGloss = glossPct;
+  gGlassPvBow = bowPct;
+  gGlassPvFill = fillPct;
+}
+
+static inline uint8_t glassGlossNow() {
+  return gGlassPreview ? gGlassPvGloss : glassGlossPct;
+}
+static inline uint8_t glassBowNow() {
+  return gGlassPreview ? gGlassPvBow : glassBowPct;
+}
+static inline uint8_t glassChartFillNow() {
+  return gGlassPreview ? gGlassPvFill : glassChartFillPct;
+}
+
+// Aero with the user's highlight settings folded in. Both sliders are stored as
+// percentages so the portal can show them as percentages.
+static GlassStyle glassAero() {
+  GlassStyle gs = GLASS_AERO;
+  gs.glossA   = (uint8_t)(((uint16_t)glassGlossNow() * 255) / 100);
+  gs.glossBow = (uint8_t)(((uint16_t)glassBowNow() * 255) / 100);
+  return gs;
+}
 
 // Pane body colour for one row. Pure function of the panel row, which is what
 // lets two sprites compose adjacent slices of the same pane and join invisibly.
@@ -1009,8 +1077,9 @@ static inline Rgb glassPaneRow(int16_t panelY, int16_t dy, int16_t paneH,
   Rgb c = rgbMix(glassSkyAt(panelY), RGB_WHITE, gs.lift);
   c = rgbMix(c, accent, gs.tint);
   if (gs.bloom && paneH > 1) {
-    const int32_t t = ((int32_t)dy * 255) / (paneH - 1);
-    if (t > 140) c = rgbMix(c, accent, (uint8_t)(((int32_t)gs.bloom * (t - 140)) / 115));
+    const int32_t t = ((int32_t)dy * ALPHA_FULL_Q8) / (paneH - 1);
+    if (t > (140 << 8))
+      c = rgbMixQ8(c, accent, ((int32_t)gs.bloom * (t - (140 << 8))) / 115);
   }
   return c;
 }
@@ -1085,10 +1154,12 @@ static void glassPaneWindow(const GlassCanvas& c,
 
     // Specular height for this row is a per-column parabola; precompute the
     // row's falloff factor once.
-    int32_t glossF = 0;
+    int32_t glossF = 0;                             // Q8, 0..ALPHA_FULL_Q8
     if (glossH > 0 && dy < glossH) {
-      const int32_t f = 255 - ((int32_t)dy * 255) / glossH;
-      glossF = (f * f) / 255;                       // quadratic, no hard edge
+      const int32_t f = ALPHA_FULL_Q8 - ((int32_t)dy * ALPHA_FULL_Q8) / glossH;
+      // f*f would overflow int32 at full scale; taking the high byte of one
+      // factor keeps the square in range and still resolves 1/255 of the ramp.
+      glossF = ((f >> 8) * f) / 255;                // quadratic, no hard edge
     }
 
     // Fast interior. Away from the corner curve, the rim and the specular, a
@@ -1120,13 +1191,19 @@ static void glassPaneWindow(const GlassCanvas& c,
       Rgb col = body;
 
       if (glossF > 0) {
-        // Parabolic gloss: brightest at the pane's centre column, fading to
-        // nothing at the sides - the Vista arc.
+        // Gloss bowed toward the pane's centre column. glossBow is how much of
+        // the highlight is taken back at the sides: at the old 140 the centre
+        // of a short wide card was 34% white while its corners were 15%, and
+        // since a tile's label sits at one end and its value at the other, that
+        // bright core landed in the empty gap BETWEEN them - read as a smudge on
+        // the background rather than as a highlight on the glass. A near-flat
+        // bar keeps the Vista sheen and drops the blotch.
         const int32_t t = ((pxC - cxQ8) * 255) / (cxQ8 > 0 ? cxQ8 : 1);
-        int32_t shape = 255 - (t * t * 140) / (255 * 255);
+        int32_t shape = 255 - (t * t * gs.glossBow) / (255 * 255);
         if (shape > 0) {
           const int32_t al = ((int32_t)gs.glossA * glossF / 255) * shape / 255;
-          if (al > 0) col = rgbMix(col, RGB_WHITE, (uint8_t)(al > 255 ? 255 : al));
+          if (al > 0)
+            col = rgbMixQ8(col, RGB_WHITE, al > ALPHA_FULL_Q8 ? ALPHA_FULL_Q8 : al);
         }
       }
 
@@ -1292,8 +1369,11 @@ static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
                                (int16_t)(paneLocalY + yy), paneH, paneAccent, gs);
   }
   const Rgb lineInk = rgbMix(lineAccent, RGB_WHITE, 40);
-  const uint8_t AREA_TOP = 150;   // fill alpha just under the stroke
-  const uint8_t AREA_BOT = 26;    // ...and at the floor of the plot
+  // Area fill alpha, Q8, from the portal's Chart fill slider. The floor keeps
+  // the shipped 26:150 ratio to the top so one control still fades the wash out
+  // toward the bottom of the plot instead of turning it into a flat block.
+  const int32_t AREA_TOP = ((int32_t)glassChartFillNow() * ALPHA_FULL_Q8) / 100;
+  const int32_t AREA_BOT = (AREA_TOP * 26) / 150;
 
   // Column geometry first, so the stroke can span between neighbours. The half
   // stroke is a touch over one pixel: thinner reads as a dotted line once a
@@ -1366,19 +1446,23 @@ static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
       // Whatever the pane would have been at this pixel is the chart's ground.
       Rgb base = rowBase[yy];
 
-      // Area fill under the stroke, fading with depth.
+      // Area fill under the stroke, fading with depth. Depth is a Q12 fraction
+      // rather than a 0..255 step for the same reason the pane ramps carry a
+      // fraction: over a 60-row plot a whole alpha step is a visible contour.
+      // Q12 and not Q8 of 255 because a Q8 alpha times a Q8 depth overshoots
+      // int32 at full plot height.
       int32_t al = -1;
       if (rowT >= fillTop) {
-        const int32_t depth =
-          hQ8 > fillTop ? ((rowT - fillTop) * 255) / (hQ8 - fillTop + 1) : 255;
-        al = AREA_TOP - ((AREA_TOP - AREA_BOT) * depth) / 255;
+        const int32_t depth = hQ8 > fillTop
+          ? (((rowT - fillTop) << 12) / (hQ8 - fillTop + 1)) : 4096;
+        al = AREA_TOP - (((AREA_TOP - AREA_BOT) * depth) >> 12);
       } else if (rowB > fillTop) {
         // Partial row at the fill's top edge.
-        al = (AREA_TOP * ((rowB - fillTop) * 255 / 256)) / 255;
+        al = (AREA_TOP * (rowB - fillTop)) >> 8;
       }
       if (al > 0) {
         al = (al * edgeA) / 255;
-        base = rgbMix(base, lineAccent, (uint8_t)(al > 255 ? 255 : al));
+        base = rgbMixQ8(base, lineAccent, al > ALPHA_FULL_Q8 ? ALPHA_FULL_Q8 : al);
       }
 
       // Stroke coverage for this row.
@@ -2578,8 +2662,9 @@ static inline uint16_t glassLabelInk(uint16_t accent565) {
   return rgbTo565(c, 0, 0);
 }
 
-static const Rgb GLASS_TINT_AERO   = { 44, 96, 150 };
-static const Rgb GLASS_TINT_LIQUID = { 66, 62, 134 };
+// Subpixel units, so the 8-bit values these were authored as are scaled up.
+static const Rgb GLASS_TINT_AERO   = { 44 * RGB_ONE, 96 * RGB_ONE, 150 * RGB_ONE };
+static const Rgb GLASS_TINT_LIQUID = { 66 * RGB_ONE, 62 * RGB_ONE, 134 * RGB_ONE };
 
 // Value/unit/label onto an already-composed glass window. Transparent text:
 // the two-argument setTextColor paints an opaque glyph box, which on glass
@@ -2631,6 +2716,7 @@ static void drawGlassTilesScreen(bool fr) {
   if (!layoutCountReady(n)) return;
 
   glassSkyInit(h, GLASS_TINT_AERO, 150, 62, 90);
+  const GlassStyle aero = glassAero();
 
   static uint8_t lastN = 0xFF;
   bool relayout = false;
@@ -2734,7 +2820,7 @@ static void drawGlassTilesScreen(bool fr) {
         resetFontCache();
         GlassCanvas c = glassCanvasFor(gGlassA, &gGlassA, 0, 0);
         glassPaneWindow(c, 0, 0, cardW, headH, y, cardW, cardH, 7,
-                        paneAccent, GLASS_AERO, warnRim);
+                        paneAccent, aero, warnRim);
         glassHeadText(gGlassA, 0, headH / 2 + 1, cardW, label,
                       text, headValueFont, headUnitFont, warn, accent565);
         glassBlit(gGlassA, x, y, cardW, headH);
@@ -2742,7 +2828,7 @@ static void drawGlassTilesScreen(bool fr) {
       } else {
         GlassCanvas c = glassCanvasFor(tft, nullptr, x, y);
         glassPaneWindow(c, 0, 0, cardW, headH, y, cardW, cardH, 7,
-                        paneAccent, GLASS_AERO, warnRim);
+                        paneAccent, aero, warnRim);
         glassHeadText(tft, x, y + headH / 2 + 1, cardW, label,
                       text, headValueFont, headUnitFont, warn, accent565);
       }
@@ -2754,20 +2840,20 @@ static void drawGlassTilesScreen(bool fr) {
         // window is composed at the top of the same buffer the head used.
         GlassCanvas c = glassCanvasFor(gGlassA, &gGlassA, 0, -headH);
         glassPaneWindow(c, 0, headH, cardW, bodyH, y, cardW, cardH, 7,
-                        paneAccent, GLASS_AERO, warnRim);
+                        paneAccent, aero, warnRim);
         glassChart(c, pcHistory[vis[i].slotIdx], vis[i].slotIdx,
                    7, headH + 2, cardW - 14, bodyH - 8,
                    paneAccent, lineAccent, y, headH + 2, cardH, 0,
-                   GLASS_AERO, advance, scroll);
+                   aero, advance, scroll);
         glassBlit(gGlassA, x, y + headH, cardW, bodyH);
       } else {
         GlassCanvas c = glassCanvasFor(tft, nullptr, x, y);
         glassPaneWindow(c, 0, headH, cardW, bodyH, y, cardW, cardH, 7,
-                        paneAccent, GLASS_AERO, warnRim);
+                        paneAccent, aero, warnRim);
         glassChart(c, pcHistory[vis[i].slotIdx], vis[i].slotIdx,
                    7, headH + 2, cardW - 14, bodyH - 8,
                    paneAccent, lineAccent, y, headH + 2, cardH, 0,
-                   GLASS_AERO, advance, scroll);
+                   aero, advance, scroll);
       }
     }
   }

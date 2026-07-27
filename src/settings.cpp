@@ -17,6 +17,9 @@ LedSettings ledSettings;
 ThemeSettings themeSettings;
 uint8_t displayStyle = STYLE_DEFAULT;
 uint8_t chartSmoothing = 0;
+uint8_t glassGlossPct = GLASS_GLOSS_PCT_DEFAULT;
+uint8_t glassBowPct = GLASS_BOW_PCT_DEFAULT;
+uint8_t glassChartFillPct = GLASS_CHART_FILL_PCT_DEFAULT;
 uint8_t clockFace = CLOCK_FACE_STANDARD;
 uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
@@ -247,6 +250,12 @@ void loadSettings() {
   if (sparkRedrawSec > 60) sparkRedrawSec = 60;
   chartSmoothing = prefs.getUChar("chartsm", 0);
   if (chartSmoothing > CHART_SMOOTH_MAX) chartSmoothing = 0;
+  glassGlossPct = prefs.getUChar("glossa", GLASS_GLOSS_PCT_DEFAULT);
+  if (glassGlossPct > 100) glassGlossPct = GLASS_GLOSS_PCT_DEFAULT;
+  glassBowPct = prefs.getUChar("glossbow", GLASS_BOW_PCT_DEFAULT);
+  if (glassBowPct > 100) glassBowPct = GLASS_BOW_PCT_DEFAULT;
+  glassChartFillPct = prefs.getUChar("chartfill", GLASS_CHART_FILL_PCT_DEFAULT);
+  if (glassChartFillPct > 100) glassChartFillPct = GLASS_CHART_FILL_PCT_DEFAULT;
   backlightSettings.nightEnabled = backlightSettings.nightEnabled ? 1 : 0;
   backlightSettings.nightOfflineOff = backlightSettings.nightOfflineOff ? 1 : 0;
   if (backlightSettings.nightStartMinute >= 24 * 60)
@@ -326,6 +335,9 @@ void saveSettings() {
   prefs.putUChar("clockface", clockFace);
   prefs.putUChar("sparks", sparkRedrawSec);
   prefs.putUChar("chartsm", chartSmoothing);
+  prefs.putUChar("glossa", glassGlossPct);
+  prefs.putUChar("glossbow", glassBowPct);
+  prefs.putUChar("chartfill", glassChartFillPct);
   prefs.end();
 }
 

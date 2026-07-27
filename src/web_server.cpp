@@ -178,6 +178,9 @@ static void handleApiConfig() {
   display["smoothing"] = dispSettings.gaugeSmoothing;
   display["sparkSeconds"] = sparkRedrawSec;
   display["chartSmooth"] = chartSmoothing;
+  display["glassGloss"] = glassGlossPct;
+  display["glassBow"] = glassBowPct;
+  display["glassChartFill"] = glassChartFillPct;
   display["tempScale"] = dispSettings.tempScaleMax;
   display["powerScale"] = dispSettings.powerScaleW;
   display["warnThreshold"] = dispSettings.warnThresholdPct;
@@ -312,6 +315,9 @@ static void handleConfigExport() {
   display["smoothing"] = dispSettings.gaugeSmoothing;
   display["sparkSeconds"] = sparkRedrawSec;
   display["chartSmooth"] = chartSmoothing;
+  display["glassGloss"] = glassGlossPct;
+  display["glassBow"] = glassBowPct;
+  display["glassChartFill"] = glassChartFillPct;
   display["tempScale"] = dispSettings.tempScaleMax;
   display["powerScale"] = dispSettings.powerScaleW;
   display["warnThreshold"] = dispSettings.warnThresholdPct;
@@ -473,6 +479,25 @@ static void handleLedPreview() {
   sendJsonMessage(200, true, "Preview applied.");
 }
 
+// Live preview for the Glass surface sliders: applies to RAM and repaints, but
+// deliberately does NOT persist. A slider drag would otherwise commit one NVS
+// write per pixel of travel. /save/display commits; the portal's Revert reloads
+// /api/config and re-sends the stored values, which snaps the panel back.
+static void handleGlassPreview() {
+  if (server.hasArg("stop")) {
+    setGlassPreview(false, 0, 0, 0);
+    forceDisplayRedraw();
+    sendJsonMessage(200, true, "Preview ended.");
+    return;
+  }
+  setGlassPreview(true,
+                  (uint8_t)clampedArg("glassGloss", glassGlossPct, 0, 100),
+                  (uint8_t)clampedArg("glassBow", glassBowPct, 0, 100),
+                  (uint8_t)clampedArg("glassChartFill", glassChartFillPct, 0, 100));
+  forceDisplayRedraw();
+  sendJsonMessage(200, true, "Preview applied.");
+}
+
 static void handleSaveDisplay() {
   bool panelChanged = false;
 
@@ -483,6 +508,13 @@ static void handleSaveDisplay() {
   sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
   chartSmoothing =
     (uint8_t)clampedArg("chartSmooth", chartSmoothing, 0, CHART_SMOOTH_MAX);
+  glassGlossPct = (uint8_t)clampedArg("glassGloss", glassGlossPct, 0, 100);
+  glassBowPct = (uint8_t)clampedArg("glassBow", glassBowPct, 0, 100);
+  glassChartFillPct =
+    (uint8_t)clampedArg("glassChartFill", glassChartFillPct, 0, 100);
+  // The saved values are now the truth; drop any live preview sitting in front
+  // of them or the panel would keep showing the last dragged slider position.
+  setGlassPreview(false, 0, 0, 0);
   dispSettings.tempScaleMax = (uint16_t)clampedArg("tempScale", dispSettings.tempScaleMax, 1, 500);
   dispSettings.powerScaleW = (uint16_t)clampedArg("powerScale", dispSettings.powerScaleW, 1, 65535);
   dispSettings.warnThresholdPct = (uint8_t)clampedArg("warnThreshold", dispSettings.warnThresholdPct, 0, 100);
@@ -802,6 +834,9 @@ static void handleConfigImport() {
   uint8_t nextClockFace = clockFace;
   uint8_t nextSparkRedrawSec = sparkRedrawSec;
   uint8_t nextChartSmoothing = chartSmoothing;
+  uint8_t nextGlassGlossPct = glassGlossPct;
+  uint8_t nextGlassBowPct = glassBowPct;
+  uint8_t nextGlassChartFillPct = glassChartFillPct;
   uint8_t nextBrightness = brightness;
   bool flag = false;
 
@@ -813,6 +848,16 @@ static void handleConfigImport() {
       return; \
     } \
     target = (castType)integer; \
+  } while (0)
+// Same as READ_INT but a MISSING key leaves the target alone instead of
+// failing the restore. The backup schema is pinned at one exact version, so a
+// file written before a setting existed still declares the current schema and
+// would be rejected outright if every new key were mandatory. Anything added
+// after the schema was frozen has to come in this way.
+#define READ_INT_OPT(section, key, minValue, maxValue, target, castType) \
+  do { \
+    if (!(section)[key].isNull()) \
+      READ_INT(section, key, minValue, maxValue, target, castType); \
   } while (0)
 #define READ_BOOL(section, key, target) \
   do { \
@@ -837,6 +882,9 @@ static void handleConfigImport() {
   READ_INT(display, "smoothing", 0, 3, nextDisplay.gaugeSmoothing, uint8_t);
   READ_INT(display, "sparkSeconds", 1, 60, nextSparkRedrawSec, uint8_t);
   READ_INT(display, "chartSmooth", 0, CHART_SMOOTH_MAX, nextChartSmoothing, uint8_t);
+  READ_INT_OPT(display, "glassGloss", 0, 100, nextGlassGlossPct, uint8_t);
+  READ_INT_OPT(display, "glassBow", 0, 100, nextGlassBowPct, uint8_t);
+  READ_INT_OPT(display, "glassChartFill", 0, 100, nextGlassChartFillPct, uint8_t);
   READ_INT(display, "tempScale", 1, 500, nextDisplay.tempScaleMax, uint16_t);
   READ_INT(display, "powerScale", 1, 65535, nextDisplay.powerScaleW, uint16_t);
   READ_INT(display, "warnThreshold", 0, 100,
@@ -988,6 +1036,9 @@ static void handleConfigImport() {
   clockFace = nextClockFace;
   sparkRedrawSec = nextSparkRedrawSec;
   chartSmoothing = nextChartSmoothing;
+  glassGlossPct = nextGlassGlossPct;
+  glassBowPct = nextGlassBowPct;
+  glassChartFillPct = nextGlassChartFillPct;
   brightness = nextBrightness;
   saveSettings();
 
@@ -1405,6 +1456,7 @@ void initWebServer() {
   server.on("/save/display", HTTP_POST, handleSaveDisplay);
   server.on("/save/hardware", HTTP_POST, handleSaveHardware);
   server.on("/led/preview", HTTP_POST, handleLedPreview);
+  server.on("/glass/preview", HTTP_POST, handleGlassPreview);
   server.on("/save/gauges", HTTP_POST, handleSaveGauges);
   server.on("/save/colors", HTTP_POST, handleSaveColors);
   server.on("/save/clock", HTTP_POST, handleSaveClock);

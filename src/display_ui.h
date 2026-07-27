@@ -62,6 +62,12 @@ void forceDisplayRedraw(bool clearFirst = false);
 // the panel's pacing state (packet stamps, layout counts, smoothing, cached
 // text widths) untouched so the capture never disturbs the live display.
 void setCaptureRender(bool on);
+
+// Portal live preview for the Glass surface sliders. The persisted settings are
+// NOT touched: an override sits in front of them until it is cleared, so
+// /api/config keeps reporting what is actually stored and the portal's Revert
+// genuinely restores the panel. Saving the display form clears the override.
+void setGlassPreview(bool on, uint8_t glossPct, uint8_t bowPct, uint8_t fillPct);
 // Tell the renderer the panel content was wiped (e.g. after a color change
 // repaint) so styles repaint their static chrome on the next frame.
 void markScreenCleared();

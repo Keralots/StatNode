@@ -242,6 +242,25 @@ extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
 extern uint8_t chartSmoothing;
 constexpr uint8_t CHART_SMOOTH_MAX = 3;
 
+// Glass surface controls, all percentages, all their own NVS keys for the same
+// reason chartSmoothing has one: growing the "disp" blob resizes it and a size
+// mismatch resets every display setting on the next OTA.
+//
+// glassGlossPct  strength of the Aero highlight over the top of a pane.
+// glassBowPct    how far that highlight narrows toward the pane's centre. 0 is
+//                a bar of even brightness across the pane; high values pull it
+//                into a centred oval, which on a short wide tile lands in the
+//                gap between the label and the value and reads as a smudge.
+// glassChartFill opacity of the wash under the chart line.
+// Glass Duo is deliberately untouched by the two highlight controls - that face
+// has no face highlight by design, only lit edges.
+extern uint8_t glassGlossPct;
+extern uint8_t glassBowPct;
+extern uint8_t glassChartFillPct;
+constexpr uint8_t GLASS_GLOSS_PCT_DEFAULT = 31;       // 80/255
+constexpr uint8_t GLASS_BOW_PCT_DEFAULT = 16;         // 40/255
+constexpr uint8_t GLASS_CHART_FILL_PCT_DEFAULT = 59;  // 150/255
+
 void loadSettings();
 void saveSettings();
 bool factoryResetSettings();
