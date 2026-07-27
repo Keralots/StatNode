@@ -139,6 +139,29 @@ struct MetricText {
   char unit[8];
 };
 
+// A decimal place only where it carries information. A converted reading needs
+// one ("3.5 GHz", "3.6 MB/s"), a two- or three-digit one does not: "24.0 GB"
+// beside "38 %" spends a whole font-ladder rung on a digit that is always
+// noise, which is what made the RAM GB tile render visibly smaller than the
+// percent tile next to it.
+static void printScaled(char* buf, size_t len, float v) {
+  snprintf(buf, len, (fabsf(v) < 10.0f) ? "%.1f" : "%.0f", v);
+}
+
+// Byte-rate units climb the same 1024 ladder the storage units do. The Windows
+// companion normalises every NIC sensor to KB/s and the Linux one to MB/s, and
+// neither the panel nor the portal had any way to show a busy link as anything
+// but a four-digit KB/s reading.
+static const char* const RATE_UNITS[] = { "B/s", "KB/s", "MB/s", "GB/s", "TB/s" };
+static const uint8_t RATE_UNIT_COUNT = 5;
+
+// Position of unit on that ladder, or -1 when it is not a byte rate.
+static int8_t rateUnitIndex(const char* unit) {
+  for (uint8_t i = 0; i < RATE_UNIT_COUNT; i++)
+    if (strcmp(unit, RATE_UNITS[i]) == 0) return (int8_t)i;
+  return -1;
+}
+
 // One formatter feeds every monitor face so switching layouts never changes
 // the meaning or precision of a reading. Large base-unit values use familiar
 // compact forms while the companion protocol remains untouched.
@@ -151,22 +174,41 @@ static void formatMetricText(const PcMetric& metric, float raw, MetricText& out)
 
   const float magnitude = fabsf(raw);
   strlcpy(out.unit, metric.unit, sizeof(out.unit));
+
+  const int8_t rate = rateUnitIndex(metric.unit);
+  if (rate >= 0) {
+    float v = raw;
+    int8_t i = rate;
+    while (fabsf(v) >= 1024.0f && i < (int8_t)RATE_UNIT_COUNT - 1) {
+      v /= 1024.0f;
+      i++;
+    }
+    strlcpy(out.unit, RATE_UNITS[i], sizeof(out.unit));
+    // Below 10 the decimal is the whole reading (0.4 MB/s vs "0"), above it the
+    // sensor has no such resolution to report.
+    printScaled(out.value, sizeof(out.value), v);
+    return;
+  }
+
   if (strcmp(metric.unit, "RPM") == 0 && magnitude >= 1000.0f) {
     snprintf(out.value, sizeof(out.value), "%.1fk", raw / 1000.0f);
   } else if (strcmp(metric.unit, "MHz") == 0 && magnitude >= 1000.0f) {
-    snprintf(out.value, sizeof(out.value), "%.1f", raw / 1000.0f);
+    printScaled(out.value, sizeof(out.value), raw / 1000.0f);
     strlcpy(out.unit, "GHz", sizeof(out.unit));
   } else if (strcmp(metric.unit, "MB") == 0 && magnitude >= 1024.0f) {
-    snprintf(out.value, sizeof(out.value), "%.1f", raw / 1024.0f);
+    printScaled(out.value, sizeof(out.value), raw / 1024.0f);
     strlcpy(out.unit, "GB", sizeof(out.unit));
   } else if (strcmp(metric.unit, "KB") == 0 && magnitude >= 1024.0f) {
-    snprintf(out.value, sizeof(out.value), "%.1f", raw / 1024.0f);
+    printScaled(out.value, sizeof(out.value), raw / 1024.0f);
     strlcpy(out.unit, "MB", sizeof(out.unit));
   } else if (strcmp(metric.unit, "W") == 0 && magnitude >= 1000.0f) {
-    snprintf(out.value, sizeof(out.value), "%.1f", raw / 1000.0f);
+    printScaled(out.value, sizeof(out.value), raw / 1000.0f);
     strlcpy(out.unit, "kW", sizeof(out.unit));
-  } else if (strcmp(metric.unit, "V") == 0 || strcmp(metric.unit, "A") == 0 ||
-             strcmp(metric.unit, "GHz") == 0 || strcmp(metric.unit, "GB") == 0) {
+  } else if (strcmp(metric.unit, "GHz") == 0 || strcmp(metric.unit, "GB") == 0) {
+    printScaled(out.value, sizeof(out.value), raw);
+  } else if (strcmp(metric.unit, "V") == 0 || strcmp(metric.unit, "A") == 0) {
+    // Rails and currents keep their decimal at every magnitude - 12.2 V and
+    // 12 V are different readings to anyone watching a rail.
     snprintf(out.value, sizeof(out.value), "%.1f", raw);
   } else {
     snprintf(out.value, sizeof(out.value), "%.0f", raw);
@@ -373,16 +415,51 @@ static void slotProbe(const GaugeSlot& s, const PcMetric& m, char* buf, size_t l
   strlcpy(buf, widest, len);
 }
 
-// Pick the widest font (from base downwards) whose rendering of s fits maxW.
-// Leaves the chosen font active. FONT_XLARGE quietly renders as FONT_LARGE on
-// boards without the 22pt blob, which is exactly the wanted degradation.
-static FontID fitFontForWidth(const char* s, int16_t maxW, FontID base) {
-  static const FontID steps[] = { FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL };
+// ---------------------------------------------------------------------------
+//  Font ladders and UNIFORM GROUP SIZING.
+//
+//  Two ladders: TEXT_LADDER carries the full charset (used wherever the drawn
+//  string includes its unit or is a label), VALUE_LADDER adds the oversized
+//  digits-only faces for bare readings.
+//
+//  Every cell of a face used to fit its own string independently. Cells differ
+//  in label width, unit width and reading width, so an identical-looking grid
+//  could render "38" two rungs above "24.0 GB" in the cell beside it, which
+//  reads as a fault rather than as a fit. Each face now runs a cheap pre-pass
+//  that fits every member, keeps the SMALLEST rung any of them needed (the
+//  largest index - both ladders run big to small), and renders the whole group
+//  at that one size.
+//
+//  A face MUST fold the group rung into each cell's repaint key. When the group
+//  steps down, the members whose own reading did not change still have to
+//  repaint, or half the grid keeps the previous size.
+// ---------------------------------------------------------------------------
+static const FontID TEXT_LADDER[] = { FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL };
+static const uint8_t TEXT_LADDER_N = 4;
+
+// Rung of base itself, i.e. where a fit starting from base begins.
+static uint8_t textLadderIndex(FontID base) {
   uint8_t i = 0;
-  while (i < 3 && steps[i] != base) i++;
-  setFont(tft, steps[i]);
-  while (i < 3 && tft.textWidth(s) > maxW) setFont(tft, steps[++i]);
-  return steps[i];
+  while (i + 1 < TEXT_LADDER_N && TEXT_LADDER[i] != base) i++;
+  return i;
+}
+
+// Rung of the widest face at or below base whose rendering of s fits maxW.
+// Leaves that face active. FONT_XLARGE quietly renders as FONT_LARGE on boards
+// without the 22pt blob, which is exactly the wanted degradation.
+static uint8_t fitTextRung(lgfx::LovyanGFX& gfx, const char* s, int16_t maxW,
+                           FontID base) {
+  uint8_t i = textLadderIndex(base);
+  setFont(gfx, TEXT_LADDER[i]);
+  while (i + 1 < TEXT_LADDER_N && (int16_t)gfx.textWidth(s) > maxW)
+    setFont(gfx, TEXT_LADDER[++i]);
+  return i;
+}
+
+// Pick the widest font (from base downwards) whose rendering of s fits maxW.
+// Leaves the chosen font active.
+static FontID fitFontForWidth(const char* s, int16_t maxW, FontID base) {
+  return TEXT_LADDER[fitTextRung(tft, s, maxW, base)];
 }
 
 // True when the canvas is materially bigger than the 240-wide square panels -
@@ -432,23 +509,30 @@ static inline int16_t valueBaseline(int16_t gapY, int16_t band, int16_t fh) {
   return (baseY > gapY + band) ? (int16_t)(gapY + band) : baseY;
 }
 
-static FontID fitValueFont(lgfx::LovyanGFX& gfx, const char* s,
-                           int16_t maxW, int16_t maxH) {
-  static const FontID ladder[] = {
-    FONT_NUM_XXL, FONT_NUM_XL, FONT_NUM_L, FONT_NUM_M,
-    FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL
-  };
-  const uint8_t last = (uint8_t)(sizeof(ladder) / sizeof(ladder[0]) - 1);
+static const FontID VALUE_LADDER[] = {
+  FONT_NUM_XXL, FONT_NUM_XL, FONT_NUM_L, FONT_NUM_M,
+  FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL
+};
+static const uint8_t VALUE_LADDER_N = 8;
+
+// Rung (0 = biggest) of the largest value face that fits. Leaves it active.
+static uint8_t fitValueRung(lgfx::LovyanGFX& gfx, const char* s,
+                            int16_t maxW, int16_t maxH) {
   gfx.setTextSize(1.0f);
-  for (uint8_t i = 0; i < last; i++) {
-    setFont(gfx, ladder[i]);
+  for (uint8_t i = 0; i + 1 < VALUE_LADDER_N; i++) {
+    setFont(gfx, VALUE_LADDER[i]);
     if ((int16_t)gfx.textWidth(s) <= maxW &&
         (int16_t)gfx.fontHeight() <= maxH + VALUE_BOX_SLACK) {
-      return ladder[i];
+      return i;
     }
   }
-  setFont(gfx, ladder[last]);
-  return ladder[last];
+  setFont(gfx, VALUE_LADDER[VALUE_LADDER_N - 1]);
+  return VALUE_LADDER_N - 1;
+}
+
+static FontID fitValueFont(lgfx::LovyanGFX& gfx, const char* s,
+                           int16_t maxW, int16_t maxH) {
+  return VALUE_LADDER[fitValueRung(gfx, s, maxW, maxH)];
 }
 
 // Upgrade the unit face beside a fitted value. The value is always fitted
@@ -457,18 +541,47 @@ static FontID fitValueFont(lgfx::LovyanGFX& gfx, const char* s,
 // taller than the unit. So a narrow % grows beside big digits while a wide
 // RPM simply stays small - the value never shrinks for its unit. Leaves the
 // font state changed; the caller re-applies the value font afterwards.
-static FontID upgradeUnitFont(const char* unit, int16_t slackW,
-                              int16_t valueFh, int16_t smallUnitW) {
+// Takes the target explicitly so the sprite-composed glass faces can use it.
+//
+// slackW MUST be measured against the slot PROBE, never the live reading.
+// Inter's digits are proportional, so "1.9k" is narrower than "2.0k" - feeding
+// the live width in made a pump crossing 2000 RPM hand back enough slack to
+// jump its unit a whole face, and the RPM visibly resized every few packets.
+// The probe is the widest realistic reading and does not move between packets,
+// which is exactly the stability this needs.
+static FontID upgradeUnitFont(lgfx::LovyanGFX& gfx, const char* unit,
+                              int16_t slackW, int16_t valueFh,
+                              int16_t smallUnitW) {
   if (!unit || !unit[0]) return FONT_SMALL;
   if (valueFh >= 35) {
-    setFont(tft, FONT_LARGE);
-    if ((int16_t)tft.textWidth(unit) - smallUnitW <= slackW) return FONT_LARGE;
+    setFont(gfx, FONT_LARGE);
+    if ((int16_t)gfx.textWidth(unit) - smallUnitW <= slackW) return FONT_LARGE;
   }
   if (valueFh >= 24) {
-    setFont(tft, FONT_BODY);
-    if ((int16_t)tft.textWidth(unit) - smallUnitW <= slackW) return FONT_BODY;
+    setFont(gfx, FONT_BODY);
+    if ((int16_t)gfx.textWidth(unit) - smallUnitW <= slackW) return FONT_BODY;
   }
   return FONT_SMALL;
+}
+
+// The three faces upgradeUnitFont can return, biggest first. A face that sizes
+// its units per cell ends up with a wide RPM at 10px next to a narrow % at
+// 19px, because only the narrow one had the slack to grow. Groups therefore
+// take the SMALLEST face any of their members could use, the same way they take
+// the smallest value rung.
+static const FontID UNIT_LADDER[] = { FONT_LARGE, FONT_BODY, FONT_SMALL };
+
+static uint8_t unitLadderIndex(FontID f) {
+  return (f == FONT_LARGE) ? 0 : (f == FONT_BODY) ? 1 : 2;
+}
+
+// Baseline offset that makes a unit sit on the value's baseline when both are
+// drawn with a BOTTOM datum. BL_DATUM places a box BOTTOM, not a baseline, so
+// a shared y drops the smaller face by the difference in descents - 14 px under
+// an 83 px value, which is what left the % and RPM hanging below their numbers
+// on the glass faces. Subtract this from the value's baseline y.
+static inline int16_t unitBaselineShift(int16_t valueFh, int16_t unitFh) {
+  return (int16_t)(fontDescent(valueFh) - fontDescent(unitFh));
 }
 
 // Horizontal meter: full-width track + fraction fill, rounded ends.
@@ -1454,6 +1567,43 @@ static void drawBigNumbersScreen(bool fr) {
       tft.drawFastVLine(w / 2, 6, gridH - 12, dispSettings.trackColor);
   }
 
+  // Every cell has the same geometry, so the value band is cell-relative and
+  // only the unit width differs between them. Fit them all, keep the smallest
+  // rung, render the grid at that one size.
+  setFont(tft, FONT_SMALL);
+  const int16_t cellGapY = (roomy ? 8 : 4) + (int16_t)tft.fontHeight();
+  const int16_t cellBand = cellH - (roomy ? 12 : 7) - 6 - cellGapY;
+  uint8_t vrung = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[i].metric, vis[i].metric->value, probeText);
+    setFont(tft, big ? FONT_XLARGE : FONT_SMALL);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[i].slot, *vis[i].metric, pr, sizeof(pr));
+    const uint8_t r = fitValueRung(tft, pr, cellW - 2 * padX - uW - 5, cellBand);
+    if (r > vrung) vrung = r;
+  }
+  // Same for the unit face: sized per cell, a narrow % grows where a wide RPM
+  // cannot, and the grid ends up with two unit sizes. The big canvas derives
+  // its unit from the (now uniform) value height, so only the small one needs
+  // the group pass.
+  uint8_t urung = 0;
+  for (uint8_t i = 0; i < n && !big; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[i].metric, vis[i].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[i].slot, *vis[i].metric, pr, sizeof(pr));
+    setFont(tft, VALUE_LADDER[vrung]);
+    const int16_t vFh = (int16_t)tft.fontHeight();
+    const int16_t pW = (int16_t)tft.textWidth(pr);
+    const uint8_t r = unitLadderIndex(upgradeUnitFont(
+        tft, probeText.unit, cellW - 2 * padX - uW - 5 - pW, vFh, uW));
+    if (r > urung) urung = r;
+  }
+
   for (uint8_t i = 0; i < n; i++) {
     const int16_t x = (i % cols) * cellW;
     const int16_t y = (i / cols) * cellH;
@@ -1467,7 +1617,8 @@ static void drawBigNumbersScreen(bool fr) {
     MetricText text;
     formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s%u%u", text.value, warn ? "!" : "",
+             vrung, urung);
     if (!gaugeTextChanged(x + cellW / 2, y + cellH / 2, key, label, fr)) continue;
 
     // No cell clear: every element overwrites itself opaquely, so only the
@@ -1501,14 +1652,15 @@ static void drawBigNumbersScreen(bool fr) {
     // (baseY - gapY) so the vacated-pixel clear inside drawValueRegionL covers
     // exactly that void and can never reach up into the label.
     const int16_t band = meterTop - 6 - gapY;
-    const FontID vf = fitValueFont(tft, probe, availW, band);
+    const FontID vf = VALUE_LADDER[vrung];
+    setFont(tft, vf);
+    tft.setTextSize(1.0f);
     const int16_t valueFh = (int16_t)tft.fontHeight();
     const int16_t baseY = valueBaseline(gapY, band, valueFh);
     const int16_t bandH = baseY - gapY;
-    const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
     // Keep the unit a clear step below the value so it stays subordinate.
     const FontID uf = big ? ((valueFh >= 60) ? FONT_XLARGE : FONT_LARGE)
-                          : upgradeUnitFont(text.unit, slackW, valueFh, unitW);
+                          : UNIT_LADDER[urung];
     setFont(tft, vf);
     static int16_t prevVw[NUM_GAUGE_SLOTS];
     if (fr && !gCaptureRender) prevVw[vis[i].slotIdx] = -1;
@@ -1578,6 +1730,23 @@ static void drawTilesScreen(bool fr) {
 
   RendererWrite rw(tft);
 
+  // Uniform head type across the cards - see the font ladder notes. Measured
+  // on the panel; the compose sprite renders the same glyph metrics.
+  const FontID headBase = (headH >= 34) ? FONT_LARGE : FONT_BODY;
+  uint8_t vrung = textLadderIndex(headBase);
+  for (uint8_t i = 0; i < n; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[i].metric, vis[i].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t lW = (int16_t)tft.textWidth(vis[i].label);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[i].slot, *vis[i].metric, pr, sizeof(pr));
+    const uint8_t r = fitTextRung(tft, pr, cardW - 30 - lW - uW, headBase);
+    if (r > vrung) vrung = r;
+  }
+  const FontID headValueFont = TEXT_LADDER[vrung];
+
   for (uint8_t i = 0; i < n; i++) {
     const int16_t x = pad + (i % cols) * (cardW + gap);
     const int16_t y = pad + (i / cols) * (cardH + gap);
@@ -1595,7 +1764,7 @@ static void drawTilesScreen(bool fr) {
     MetricText text;
     formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s%u", text.value, warn ? "!" : "", vrung);
     const bool head = gaugeTextChanged(x + cardW / 2, y, key, label, fr);
 
     // Card background only when something actually blanked the area - a
@@ -1628,18 +1797,7 @@ static void drawTilesScreen(bool fr) {
         headSpr.setTextColor(themeSettings.secondaryColor, cardBg);
         headSpr.drawString(text.unit, cardW - 9, headCy);
 
-        char probe[12];
-        slotProbe(s, m, probe, sizeof(probe));
-        // Width-fit the probe on the sprite (same glyph metrics as the panel).
-        {
-          static const FontID steps[] = { FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL };
-          uint8_t fi = 0;
-          FontID base = (headH >= 34) ? FONT_LARGE : FONT_BODY;
-          while (fi < 3 && steps[fi] != base) fi++;
-          setFont(headSpr, steps[fi]);
-          const int16_t maxW = cardW - 30 - labelW - unitW;
-          while (fi < 3 && headSpr.textWidth(probe) > maxW) setFont(headSpr, steps[++fi]);
-        }
+        setFont(headSpr, headValueFont);
         headSpr.setTextDatum(MR_DATUM);
         headSpr.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor,
                              cardBg);
@@ -1660,10 +1818,7 @@ static void drawTilesScreen(bool fr) {
         tft.setTextDatum(MR_DATUM);
         tft.setTextColor(themeSettings.secondaryColor, cardBg);
         tft.drawString(text.unit, x + cardW - 9, headCy);
-        char probe[12];
-        slotProbe(s, m, probe, sizeof(probe));
-        fitFontForWidth(probe, cardW - 30 - labelW - unitW,
-                         (headH >= 34) ? FONT_LARGE : FONT_BODY);
+        setFont(tft, headValueFont);
         drawValueRegionR(x + 9 + labelW + 6, x + cardW - 9 - unitW - 4, headCy,
                          headH - 4, text.value,
                          warn ? dispSettings.warnColor : themeSettings.valueColor,
@@ -1772,7 +1927,7 @@ static void drawHeroScreen(bool fr) {
     const int16_t bandH = baseY - gapY;
     const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
     const FontID uf = big ? ((valueFh >= 60) ? FONT_XLARGE : FONT_LARGE)
-                          : upgradeUnitFont(heroText.unit, slackW, valueFh, unitW);
+                          : upgradeUnitFont(tft, heroText.unit, slackW, valueFh, unitW);
     setFont(tft, vf);
     static int16_t heroPrevVw = -1;
     if (fr && !gCaptureRender) heroPrevVw = -1;
@@ -1825,6 +1980,21 @@ static void drawHeroScreen(bool fr) {
   // FONT_NUM_* is digits-only and would drop the letters.
   const FontID rowLabelFont = big ? ((rowH >= 40) ? FONT_LARGE : FONT_BODY)
                                   : ((rowH >= 24) ? FONT_BODY : FONT_SMALL);
+  // Uniform reading type down the rows - see the font ladder notes. The rows
+  // share one value column, so only the string differs between them.
+  const FontID rowValueBase = big ? ((rowH >= 44) ? FONT_XLARGE : FONT_LARGE)
+                                  : ((rowH >= 34) ? FONT_LARGE : FONT_BODY);
+  uint8_t rowRung = textLadderIndex(rowValueBase);
+  for (uint8_t i = 1; i < n; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[i].metric,
+                     slotScaleMax(*vis[i].slot, *vis[i].metric), probeText);
+    char pr[20];
+    snprintf(pr, sizeof(pr), "%s %s", probeText.value, probeText.unit);
+    const uint8_t r = fitTextRung(tft, pr, rowValueW, rowValueBase);
+    if (r > rowRung) rowRung = r;
+  }
+  const FontID rowValueFont = TEXT_LADDER[rowRung];
   for (uint8_t i = 1; i < n; i++) {
     const PcMetric& m = *vis[i].metric;
     const GaugeSlot& s = *vis[i].slot;
@@ -1838,7 +2008,7 @@ static void drawHeroScreen(bool fr) {
     MetricText rowText;
     formatMetricText(m, m.value, rowText);
     char rkey[16];
-    snprintf(rkey, sizeof(rkey), "%s%s", rowText.value, warn ? "!" : "");
+    snprintf(rkey, sizeof(rkey), "%s%s%u", rowText.value, warn ? "!" : "", rowRung);
     if (!gaugeTextChanged(w / 2, cy, rkey, label, fr)) continue;
 
     fitFontForWidth(label, bx - 16, rowLabelFont);
@@ -1851,14 +2021,7 @@ static void drawHeroScreen(bool fr) {
 
     char vb[20];
     snprintf(vb, sizeof(vb), "%s %s", rowText.value, rowText.unit);
-    MetricText probeText;
-    formatMetricText(m, scale, probeText);
-    char valueProbe[20];
-    snprintf(valueProbe, sizeof(valueProbe), "%s %s",
-             probeText.value, probeText.unit);
-    fitFontForWidth(valueProbe, rowValueW,
-                    big ? ((rowH >= 44) ? FONT_XLARGE : FONT_LARGE)
-                        : ((rowH >= 34) ? FONT_LARGE : FONT_BODY));
+    setFont(tft, rowValueFont);
     drawValueRegionR(valueLeft, valueRight, cy, rowH - 2, vb,
                      warn ? dispSettings.warnColor : themeSettings.valueColor, bg);
   }
@@ -1918,6 +2081,22 @@ static void drawStripsScreen(bool fr) {
   static int16_t rsW = 0, rsH = 0;
   const bool off = ensureSprite(rowSpr, rsW, rsH, w, rowH);
 
+  // Uniform reading type down the lanes - see the font ladder notes. Every
+  // lane repaints on every chart tick, so there is no repaint key to carry.
+  const FontID laneBase = (rowH >= 34) ? FONT_LARGE : FONT_BODY;
+  uint8_t laneRung = textLadderIndex(laneBase);
+  for (uint8_t i = 0; i < n; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[i].metric, vis[i].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[i].slot, *vis[i].metric, pr, sizeof(pr));
+    const uint8_t r = fitTextRung(tft, pr, w / 2 - uW - 12, laneBase);
+    if (r > laneRung) laneRung = r;
+  }
+  const FontID laneValueFont = TEXT_LADDER[laneRung];
+
   for (uint8_t i = 0; i < n; i++) {
     const int16_t y = i * rowH;
     const PcMetric& m = *vis[i].metric;
@@ -1929,8 +2108,6 @@ static void drawStripsScreen(bool fr) {
 
     MetricText text;
     formatMetricText(m, m.value, text);
-    char probe[12];
-    slotProbe(s, m, probe, sizeof(probe));
 
     lgfx::LovyanGFX& g = off ? (lgfx::LovyanGFX&)rowSpr : (lgfx::LovyanGFX&)tft;
     const int16_t oy = off ? 0 : y;
@@ -1955,15 +2132,7 @@ static void drawStripsScreen(bool fr) {
     const int16_t labelH = (int16_t)g.fontHeight();
     const int16_t unitW = g.textWidth(text.unit);
 
-    {
-      static const FontID steps[] = { FONT_XLARGE, FONT_LARGE, FONT_BODY, FONT_SMALL };
-      uint8_t fi = 0;
-      FontID base = (rowH >= 34) ? FONT_LARGE : FONT_BODY;
-      while (fi < 3 && steps[fi] != base) fi++;
-      setFont(g, steps[fi]);
-      const int16_t maxW = w / 2 - unitW - 12;
-      while (fi < 3 && g.textWidth(probe) > maxW) setFont(g, steps[++fi]);
-    }
+    setFont(g, laneValueFont);
     const int16_t valueRight = w - 6 - unitW - 5;
     const int16_t valueW = g.textWidth(text.value);
     const int16_t valueH = (int16_t)g.fontHeight();
@@ -2046,6 +2215,41 @@ static void drawDuoScreen(bool fr) {
 
   RendererWrite rw(tft);
 
+  // The two bands are the same shape, so they get the same value type - see
+  // the font ladder notes.
+  const int16_t bandValueW = (n == 1) ? w : chartX;
+  setFont(tft, FONT_SMALL);
+  const int16_t bandGapY = 6 + (int16_t)tft.fontHeight();
+  const int16_t bandValueBand = bandH - 8 - bandGapY;
+  uint8_t bandRung = 0;
+  for (uint8_t b = 0; b < bands; b++) {
+    MetricText probeText;
+    formatMetricText(*vis[b].metric, vis[b].metric->value, probeText);
+    setFont(tft, big ? FONT_XLARGE : FONT_SMALL);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[b].slot, *vis[b].metric, pr, sizeof(pr));
+    const uint8_t r = fitValueRung(tft, pr, bandValueW - 14 - uW - 5,
+                                   bandValueBand);
+    if (r > bandRung) bandRung = r;
+  }
+  // One unit face for both bands - see the big-numbers cells for why.
+  uint8_t bandUnitRung = 0;
+  for (uint8_t b = 0; b < bands && !big; b++) {
+    MetricText probeText;
+    formatMetricText(*vis[b].metric, vis[b].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[b].slot, *vis[b].metric, pr, sizeof(pr));
+    setFont(tft, VALUE_LADDER[bandRung]);
+    const int16_t vFh = (int16_t)tft.fontHeight();
+    const int16_t pW = (int16_t)tft.textWidth(pr);
+    const uint8_t r = unitLadderIndex(upgradeUnitFont(
+        tft, probeText.unit, bandValueW - 14 - uW - 5 - pW, vFh, uW));
+    if (r > bandUnitRung) bandUnitRung = r;
+  }
+
   for (uint8_t b = 0; b < bands; b++) {
     const int16_t y = b * bandH;
     const PcMetric& m = *vis[b].metric;
@@ -2057,7 +2261,8 @@ static void drawDuoScreen(bool fr) {
     MetricText text;
     formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s%u%u", text.value, warn ? "!" : "",
+             bandRung, bandUnitRung);
     if (gaugeTextChanged(3, y + bandH, key, label, fr)) {
       // Tight margins: the band value competes with the chart for width, so
       // the value region keeps only 10+4 px side padding and an 8 px bottom
@@ -2083,13 +2288,14 @@ static void drawDuoScreen(bool fr) {
       // Native face, box centered under the label. See the big-numbers cells
       // for why bandV is pinned to (baseY - gapY).
       const int16_t band = (y + bandH - 8) - gapY;
-      const FontID vf = fitValueFont(tft, probe, availW, band);
+      const FontID vf = VALUE_LADDER[bandRung];
+      setFont(tft, vf);
+      tft.setTextSize(1.0f);
       const int16_t valueFh = (int16_t)tft.fontHeight();
       const int16_t baseY = valueBaseline(gapY, band, valueFh);
       const int16_t bandV = baseY - gapY;
-      const int16_t slackW = availW - (int16_t)tft.textWidth(probe);
       const FontID uf = big ? ((valueFh >= 60) ? FONT_XLARGE : FONT_LARGE)
-                            : upgradeUnitFont(text.unit, slackW, valueFh, unitW);
+                            : UNIT_LADDER[bandUnitRung];
       setFont(tft, vf);
       static int16_t bandPrevVw[2] = { -1, -1 };
       if (fr && !gCaptureRender) bandPrevVw[b] = -1;
@@ -2122,6 +2328,24 @@ static void drawDuoScreen(bool fr) {
   const uint8_t rows = (rest + 1) / 2;
   const int16_t cellH = (gridH - y0) / rows;
   const int16_t cellW = w / 2;
+  // LARGE, not XLARGE: these cells are only ~160px wide and the value shares
+  // the row with the label, so an XLARGE 4-digit value plus unit ("462 MB")
+  // butts straight into a 4-character label. Still a clear step up from the
+  // original BODY ceiling. One rung for the whole grid - see the ladder notes.
+  const FontID gridBase = big ? FONT_LARGE : FONT_BODY;
+  uint8_t gridRung = textLadderIndex(gridBase);
+  for (uint8_t i = 0; i < rest; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[2 + i].metric,
+                     slotScaleMax(*vis[2 + i].slot, *vis[2 + i].metric), probeText);
+    setFont(tft, big ? FONT_BODY : FONT_SMALL);
+    const int16_t lW = (int16_t)tft.textWidth(vis[2 + i].label);
+    char pr[20];
+    snprintf(pr, sizeof(pr), "%s %s", probeText.value, probeText.unit);
+    const uint8_t r = fitTextRung(tft, pr, cellW - 26 - lW, gridBase);
+    if (r > gridRung) gridRung = r;
+  }
+  const FontID gridValueFont = TEXT_LADDER[gridRung];
   for (uint8_t i = 0; i < rest; i++) {
     const PcMetric& m = *vis[2 + i].metric;
     const GaugeSlot& s = *vis[2 + i].slot;
@@ -2136,7 +2360,7 @@ static void drawDuoScreen(bool fr) {
     MetricText text;
     formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s%u", text.value, warn ? "!" : "", gridRung);
     if (!gaugeTextChanged(x + cellW / 2, cy, key, label, fr)) continue;
 
     // Same reasoning as the hero rows: a 160px-wide cell on the large canvas
@@ -2150,17 +2374,7 @@ static void drawDuoScreen(bool fr) {
 
     char vb[20];
     snprintf(vb, sizeof(vb), "%s %s", text.value, text.unit);
-    MetricText probeText;
-    formatMetricText(m, scale, probeText);
-    char valueProbe[20];
-    snprintf(valueProbe, sizeof(valueProbe), "%s %s",
-             probeText.value, probeText.unit);
-    // LARGE, not XLARGE: these cells are only ~160px wide and the value shares
-    // the row with the label, so an XLARGE 4-digit value plus unit ("462 MB")
-    // butts straight into a 4-character label. Still a clear step up from the
-    // original BODY ceiling.
-    fitFontForWidth(valueProbe, cellW - 26 - labelW,
-                    big ? FONT_LARGE : FONT_BODY);
+    setFont(tft, gridValueFont);
     drawValueRegionR(x + 10 + labelW + 6, x + cellW - 10, cy, cellH - 14, vb,
                      warn ? dispSettings.warnColor : themeSettings.valueColor, bg);
 
@@ -2213,6 +2427,23 @@ static void drawPulseScreen(bool fr) {
   static uint8_t lastQ[NUM_GAUGE_SLOTS];
   static uint8_t qInit = 0;
 
+  // Uniform value type across the blocks - see the font ladder notes. Measured
+  // on the panel; the compose sprite renders the same glyph metrics.
+  setFont(tft, big ? FONT_BODY : FONT_SMALL);
+  const int16_t blockLabelBot = 7 + (int16_t)tft.fontHeight();
+  const int16_t blockBand = (blockH - 8) - blockLabelBot;
+  uint8_t blockRung = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[i].metric, vis[i].metric->value, probeText);
+    setFont(tft, big ? FONT_XLARGE : FONT_SMALL);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[i].slot, *vis[i].metric, pr, sizeof(pr));
+    const uint8_t r = fitValueRung(tft, pr, blockW - 18 - uW - 5, blockBand);
+    if (r > blockRung) blockRung = r;
+  }
+
   for (uint8_t i = 0; i < n; i++) {
     const int16_t x = (i % cols) * cellW;
     const int16_t y = (i / cols) * cellH;
@@ -2247,7 +2478,8 @@ static void drawPulseScreen(bool fr) {
     MetricText text;
     formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s%u", text.value, warn ? "!" : "", q);
+    snprintf(key, sizeof(key), "%s%s%u%u", text.value, warn ? "!" : "",
+             q, blockRung);
     if (!gaugeTextChanged(x + cellW / 2, y + cellH / 2, key, label, fr)) continue;
 
     char probe[12];
@@ -2266,17 +2498,12 @@ static void drawPulseScreen(bool fr) {
       blockSpr.drawString(label, 9, 7);
       const int16_t labelBot = 7 + (int16_t)blockSpr.fontHeight();
 
-      // Unit is measured on the label face (FONT_SMALL / FONT_BODY) because
-      // that is what renders it below.
-      setFont(blockSpr, FONT_SMALL);
-      if (big) setFont(blockSpr, FONT_XLARGE);
-      const int16_t unitW = blockSpr.textWidth(text.unit);
-      const int16_t maxW = blockW - 18 - unitW - 5;
       // Native digits instead of a magnified glyph, box centered between the
       // label and the block bottom - the same treatment the other faces get,
       // applied to the sprite this one composes into.
       const int16_t band = (blockH - 8) - labelBot;
-      fitValueFont(blockSpr, probe, maxW, band);
+      blockSpr.setTextSize(1.0f);
+      setFont(blockSpr, VALUE_LADDER[blockRung]);
       const int16_t valueBaseY =
           valueBaseline(labelBot, band, (int16_t)blockSpr.fontHeight());
       blockSpr.setTextDatum(BL_DATUM);
@@ -2358,25 +2585,36 @@ static const Rgb GLASS_TINT_LIQUID = { 66, 62, 134 };
 // the two-argument setTextColor paints an opaque glyph box, which on glass
 // stamps a flat rectangle through the pane. The window is recomposed every
 // time it is pushed, so there is no previous text to erase anyway.
+//
+// The value face is chosen by the caller's group pass, not here, so every card
+// on the panel carries the same size.
 static void glassHeadText(lgfx::LovyanGFX& g, int16_t x, int16_t cy,
-                          int16_t w, int16_t maxH, const char* label,
-                          const MetricText& text,
-                          const GaugeSlot& s, const PcMetric& m, bool warn,
-                          uint16_t accent) {
+                          int16_t w, const char* label,
+                          const MetricText& text, FontID valueFont,
+                          FontID unitFont, bool warn, uint16_t accent) {
   setFont(g, FONT_SMALL);
-  const int16_t labelW = g.textWidth(label);
-  const int16_t unitW  = g.textWidth(text.unit);
-
   g.setTextDatum(ML_DATUM);
   g.setTextColor(glassLabelInk(accent));
   g.drawString(label, x + 9, cy);
+
+  g.setTextSize(1.0f);
+  setFont(g, valueFont);
+  const int16_t valueFh = (int16_t)g.fontHeight();
+
+  // The unit sits on the value's baseline instead of floating at its
+  // mid-height: a 10px unit centred against a 59px number reads as detached
+  // from it. Both runs use a MIDDLE datum, so shifting the unit's centre by
+  // half the box difference lands the two boxes on a common bottom, and taking
+  // the descent difference back out lands them on a common BASELINE.
+  setFont(g, unitFont);
+  const int16_t unitFh = (int16_t)g.fontHeight();
+  const int16_t unitW  = (int16_t)g.textWidth(text.unit);
   g.setTextDatum(MR_DATUM);
   g.setTextColor(themeSettings.secondaryColor);
-  g.drawString(text.unit, x + w - 9, cy);
+  g.drawString(text.unit, x + w - 9,
+               cy + (valueFh - unitFh) / 2 - unitBaselineShift(valueFh, unitFh));
 
-  char probe[12];
-  slotProbe(s, m, probe, sizeof(probe));
-  fitValueFont(g, probe, w - 30 - labelW - unitW, maxH);
+  setFont(g, valueFont);
   g.setTextDatum(MR_DATUM);
   g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
   g.drawString(text.value, x + w - 9 - unitW - 4, cy);
@@ -2434,6 +2672,39 @@ static void drawGlassTilesScreen(bool fr) {
   const int16_t sprH = headH > bodyH ? headH : bodyH;
   const bool off = ensureSprite(gGlassA, gGlassAW, gGlassAH, cardW, sprH);
 
+  // Uniform value AND unit type across the cards - see the font ladder notes.
+  // Measured on the panel; the compose sprite renders the same glyph metrics.
+  uint8_t headRung = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[i].metric, vis[i].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t lW = (int16_t)tft.textWidth(vis[i].label);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[i].slot, *vis[i].metric, pr, sizeof(pr));
+    const uint8_t r = fitValueRung(tft, pr, cardW - 30 - lW - uW, headH - 6);
+    if (r > headRung) headRung = r;
+  }
+  const FontID headValueFont = VALUE_LADDER[headRung];
+  uint8_t headUnitRung = 0;
+  for (uint8_t i = 0; i < n; i++) {
+    MetricText probeText;
+    formatMetricText(*vis[i].metric, vis[i].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t lW = (int16_t)tft.textWidth(vis[i].label);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[i].slot, *vis[i].metric, pr, sizeof(pr));
+    setFont(tft, headValueFont);
+    const int16_t vFh = (int16_t)tft.fontHeight();
+    const int16_t pW = (int16_t)tft.textWidth(pr);
+    const uint8_t r = unitLadderIndex(upgradeUnitFont(
+        tft, probeText.unit, cardW - 30 - lW - uW - pW, vFh, uW));
+    if (r > headUnitRung) headUnitRung = r;
+  }
+  const FontID headUnitFont = UNIT_LADDER[headUnitRung];
+
   for (uint8_t i = 0; i < n; i++) {
     const int16_t x = pad + (i % cols) * (cardW + gap);
     const int16_t y = pad + (i / cols) * (cardH + gap);
@@ -2454,7 +2725,8 @@ static void drawGlassTilesScreen(bool fr) {
     MetricText text;
     formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s%u%u", text.value, warn ? "!" : "",
+             headRung, headUnitRung);
     const bool headChanged = gaugeTextChanged(x + cardW / 2, y, key, label, fr);
 
     if (headChanged) {
@@ -2463,16 +2735,16 @@ static void drawGlassTilesScreen(bool fr) {
         GlassCanvas c = glassCanvasFor(gGlassA, &gGlassA, 0, 0);
         glassPaneWindow(c, 0, 0, cardW, headH, y, cardW, cardH, 7,
                         paneAccent, GLASS_AERO, warnRim);
-        glassHeadText(gGlassA, 0, headH / 2 + 1, cardW, headH - 6, label,
-                      text, s, m, warn, accent565);
+        glassHeadText(gGlassA, 0, headH / 2 + 1, cardW, label,
+                      text, headValueFont, headUnitFont, warn, accent565);
         glassBlit(gGlassA, x, y, cardW, headH);
         resetFontCache();
       } else {
         GlassCanvas c = glassCanvasFor(tft, nullptr, x, y);
         glassPaneWindow(c, 0, 0, cardW, headH, y, cardW, cardH, 7,
                         paneAccent, GLASS_AERO, warnRim);
-        glassHeadText(tft, x, y + headH / 2 + 1, cardW, headH - 6, label,
-                      text, s, m, warn, accent565);
+        glassHeadText(tft, x, y + headH / 2 + 1, cardW, label,
+                      text, headValueFont, headUnitFont, warn, accent565);
       }
     }
 
@@ -2552,6 +2824,40 @@ static void drawGlassDuoScreen(bool fr) {
 
   const bool off = ensureSprite(gGlassA, gGlassAW, gGlassAH, halfW, bandH);
 
+  // The capsules are the same shape, so they get the same value AND unit type -
+  // see the font ladder notes. Measured on the panel; the compose sprite
+  // renders the same glyph metrics.
+  setFont(tft, FONT_SMALL);
+  const int16_t bandLabelFh = (int16_t)tft.fontHeight();
+  const int16_t bandValueBand = bandH - 10 - 9 - bandLabelFh;
+  uint8_t bandRung = 0;
+  for (uint8_t b = 0; b < bands; b++) {
+    MetricText probeText;
+    formatMetricText(*vis[b].metric, vis[b].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[b].slot, *vis[b].metric, pr, sizeof(pr));
+    const uint8_t r = fitValueRung(tft, pr, halfW - 28 - uW, bandValueBand);
+    if (r > bandRung) bandRung = r;
+  }
+  uint8_t bandUnitRung = 0;
+  for (uint8_t b = 0; b < bands; b++) {
+    MetricText probeText;
+    formatMetricText(*vis[b].metric, vis[b].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[b].slot, *vis[b].metric, pr, sizeof(pr));
+    setFont(tft, VALUE_LADDER[bandRung]);
+    const int16_t vFh = (int16_t)tft.fontHeight();
+    const int16_t pW = (int16_t)tft.textWidth(pr);
+    const uint8_t r = unitLadderIndex(upgradeUnitFont(
+        tft, probeText.unit, halfW - 28 - uW - pW, vFh, uW));
+    if (r > bandUnitRung) bandUnitRung = r;
+  }
+  const FontID bandUnitFont = UNIT_LADDER[bandUnitRung];
+
   for (uint8_t b = 0; b < bands; b++) {
     const int16_t y = margin + b * (bandH + vgap);
     const PcMetric& m = *vis[b].metric;
@@ -2568,7 +2874,8 @@ static void drawGlassDuoScreen(bool fr) {
     MetricText text;
     formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s%u%u", text.value, warn ? "!" : "",
+             bandRung, bandUnitRung);
     const bool textChanged = gaugeTextChanged(3, y + bandH, key, label, fr);
 
     // Left capsule half: name and reading.
@@ -2587,23 +2894,26 @@ static void drawGlassDuoScreen(bool fr) {
       g.drawString(label, gx + 15, gy + 9);
       const int16_t lfh = (int16_t)g.fontHeight();
 
-      char probe[12];
-      slotProbe(s, m, probe, sizeof(probe));
-      setFont(g, FONT_SMALL);
-      const int16_t unitW = g.textWidth(text.unit);
       const int16_t gapY = gy + 9 + lfh;
       const int16_t band = (gy + bandH - 10) - gapY;
-      const FontID vf = fitValueFont(g, probe, halfW - 28 - unitW, band);
+      g.setTextSize(1.0f);
+      setFont(g, VALUE_LADDER[bandRung]);
       const int16_t valueFh = (int16_t)g.fontHeight();
       const int16_t baseY = valueBaseline(gapY, band, valueFh);
-      setFont(g, vf);
       g.setTextDatum(BL_DATUM);
       g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
       g.drawString(text.value, gx + 14, baseY);
       const int16_t vw = (int16_t)g.textWidth(text.value);
-      setFont(g, FONT_SMALL);
+
+      // The unit rides the value's baseline. Both runs use a BOTTOM datum,
+      // which places a box bottom rather than a baseline, so the shared baseY
+      // was dropping the small face by the difference in descents - 14px under
+      // an 83px value, which is what left the % and RPM hanging below their
+      // numbers.
+      setFont(g, bandUnitFont);
       g.setTextColor(themeSettings.secondaryColor);
-      g.drawString(text.unit, gx + 14 + vw + 5, baseY);
+      g.drawString(text.unit, gx + 14 + vw + 5,
+                   baseY - unitBaselineShift(valueFh, (int16_t)g.fontHeight()));
       g.setTextDatum(TL_DATUM);
 
       if (off) {
@@ -2638,6 +2948,41 @@ static void drawGlassDuoScreen(bool fr) {
   if (pillH < 16) return;
   const bool poff = ensureSprite(gGlassB, gGlassBW, gGlassBH, pillW, pillH);
 
+  // Uniform value type across the pills - see the font ladder notes. This is
+  // what stops a "24 GB" pill rendering a rung under the "38 %" pill beside it.
+  uint8_t pillRung = 0;
+  for (uint8_t i = 0; i < rest; i++) {
+    const uint8_t vi = i + 2;
+    MetricText probeText;
+    formatMetricText(*vis[vi].metric, vis[vi].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t lW = (int16_t)tft.textWidth(vis[vi].label);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[vi].slot, *vis[vi].metric, pr, sizeof(pr));
+    const uint8_t r = fitValueRung(tft, pr, pillW - 34 - lW - uW, pillH - 12);
+    if (r > pillRung) pillRung = r;
+  }
+  const FontID pillValueFont = VALUE_LADDER[pillRung];
+  uint8_t pillUnitRung = 0;
+  for (uint8_t i = 0; i < rest; i++) {
+    const uint8_t vi = i + 2;
+    MetricText probeText;
+    formatMetricText(*vis[vi].metric, vis[vi].metric->value, probeText);
+    setFont(tft, FONT_SMALL);
+    const int16_t lW = (int16_t)tft.textWidth(vis[vi].label);
+    const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
+    char pr[12];
+    slotProbe(*vis[vi].slot, *vis[vi].metric, pr, sizeof(pr));
+    setFont(tft, pillValueFont);
+    const int16_t vFh = (int16_t)tft.fontHeight();
+    const int16_t pW = (int16_t)tft.textWidth(pr);
+    const uint8_t r = unitLadderIndex(upgradeUnitFont(
+        tft, probeText.unit, pillW - 34 - lW - uW - pW, vFh, uW));
+    if (r > pillUnitRung) pillUnitRung = r;
+  }
+  const FontID pillUnitFont = UNIT_LADDER[pillUnitRung];
+
   for (uint8_t i = 0; i < rest; i++) {
     const uint8_t vi = i + 2;
     const int16_t x = margin + (i % 2) * (pillW + hgap);
@@ -2655,7 +3000,8 @@ static void drawGlassDuoScreen(bool fr) {
     MetricText text;
     formatMetricText(m, m.value, text);
     char key[16];
-    snprintf(key, sizeof(key), "%s%s", text.value, warn ? "!" : "");
+    snprintf(key, sizeof(key), "%s%s%u%u", text.value, warn ? "!" : "",
+             pillRung, pillUnitRung);
     if (!gaugeTextChanged(x + 1, y + 1, key, label, fr)) continue;
 
     lgfx::LovyanGFX& g = poff ? (lgfx::LovyanGFX&)gGlassB : (lgfx::LovyanGFX&)tft;
@@ -2671,21 +3017,28 @@ static void drawGlassDuoScreen(bool fr) {
     // bottom row; the meter then takes the floor on its own.
     const int16_t cy = gy + pillH / 2 - 2;
     setFont(g, FONT_SMALL);
-    const int16_t labelW = g.textWidth(label);
-    const int16_t unitW = g.textWidth(text.unit);
     g.setTextDatum(ML_DATUM);
     g.setTextColor(glassLabelInk(accent565));
     g.drawString(label, gx + 12, cy);
 
-    char probe[12];
-    slotProbe(s, m, probe, sizeof(probe));
-    fitValueFont(g, probe, pillW - 34 - labelW - unitW, pillH - 12);
+    g.setTextSize(1.0f);
+    setFont(g, pillValueFont);
+    const int16_t valueFh = (int16_t)g.fontHeight();
+
+    // Unit sits on the value's baseline - see glassHeadText for why a middle
+    // datum needs both corrections.
+    setFont(g, pillUnitFont);
+    const int16_t unitFh = (int16_t)g.fontHeight();
+    const int16_t unitW = (int16_t)g.textWidth(text.unit);
+    g.setTextDatum(MR_DATUM);
+    g.setTextColor(themeSettings.secondaryColor);
+    g.drawString(text.unit, gx + pillW - 11,
+                 cy + (valueFh - unitFh) / 2 - unitBaselineShift(valueFh, unitFh));
+
+    setFont(g, pillValueFont);
     g.setTextDatum(MR_DATUM);
     g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
     g.drawString(text.value, gx + pillW - 11 - unitW - 4, cy);
-    setFont(g, FONT_SMALL);
-    g.setTextColor(themeSettings.secondaryColor);
-    g.drawString(text.unit, gx + pillW - 11, cy);
     g.setTextDatum(TL_DATUM);
 
     // Meter on the capsule floor, drawn through the compositor so its ends
