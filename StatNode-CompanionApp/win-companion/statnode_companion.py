@@ -393,35 +393,236 @@ def get_librehardwaremonitor_version():
     return None
 
 
-def extract_sensors_from_tree(node, sensor_list=None, parent_hardware=None):
+# ---------------------------------------------------------------------------
+# Hardware context
+#
+# LibreHardwareMonitor happily reports seven sensors named "Temperature" and
+# three named "Network Utilization". The only thing that tells them apart is the
+# hardware they belong to, so discovery attaches a hardware name plus a short
+# detail line (drive letters, IP address, link state) to every sensor.
+# ---------------------------------------------------------------------------
+
+_hardware_context = {"nics": {}, "disks": {}, "primary_ip": ""}
+_DISK_KINDS = ("nvme", "hdd", "ssd", "storage")
+
+
+def _primary_ipv4():
+    """Return the local address the default route would use. Sends no traffic."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(0.4)
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except Exception:
+        return ""
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _link_speed_text(speed_mbps):
+    """Format a psutil link speed (Mbit/s) for the sensor list."""
+    if speed_mbps >= 1000:
+        gigabit = speed_mbps / 1000.0
+        text = ("%.1f" % gigabit).rstrip("0").rstrip(".")
+        return "%s Gb/s" % text
+    return "%d Mb/s" % speed_mbps
+
+
+def scan_network_interfaces():
+    """Describe every local interface so identical NIC sensors can be told apart.
+
+    Interface names here match the hardware names LibreHardwareMonitor uses for
+    its network devices ("Wi-Fi", "vEthernet (Default Switch)", ...).
+    """
+    primary_ip = _primary_ipv4()
+    result = {}
+    try:
+        stats = psutil.net_if_stats()
+        addresses = psutil.net_if_addrs()
+    except Exception as exc:
+        print("  (interface lookup unavailable: %s)" % exc)
+        return result, primary_ip
+
+    for name, stat in stats.items():
+        ipv4 = ""
+        for address in addresses.get(name, []):
+            # 169.254.x.x is a link-local fallback address, not a working link.
+            if address.family == socket.AF_INET and not address.address.startswith("169.254."):
+                ipv4 = address.address
+                break
+        up = bool(stat.isup)
+        if primary_ip and ipv4 == primary_ip:
+            state = "primary"
+        elif up and ipv4:
+            state = "up"
+        elif up:
+            state = "idle"
+        else:
+            state = "down"
+        result[name.strip().lower()] = {
+            "name": name,
+            "state": state,
+            "ipv4": ipv4,
+            "speed": int(stat.speed or 0),
+        }
+    return result, primary_ip
+
+
+def scan_disk_letters():
+    """Map physical disk index to drive letters so identical drives stay distinct.
+
+    LibreHardwareMonitor numbers storage devices with the Windows physical disk
+    index (/nvme/2 is disk 2), which is the same index Win32_DiskDrive reports.
+    """
+    letters = {}
+    try:
+        import gc
+        import wmi as wmi_module
+        client = wmi_module.WMI()
+        for drive in client.Win32_DiskDrive():
+            try:
+                index = int(drive.Index)
+            except (TypeError, ValueError):
+                continue
+            found = []
+            for partition in drive.associators("Win32_DiskDriveToDiskPartition"):
+                for logical in partition.associators("Win32_LogicalDiskToPartition"):
+                    if logical.DeviceID:
+                        found.append(logical.DeviceID)
+            if found:
+                letters[index] = sorted(set(found))
+        # The WMI proxies form reference cycles. Collect them here so they are
+        # released while COM is still initialized on this thread.
+        del client
+        gc.collect()
+    except Exception as exc:
+        print("  (drive letter lookup unavailable: %s)" % exc)
+    return letters
+
+
+def refresh_hardware_context():
+    """Refresh the interface and drive-letter tables used during discovery."""
+    nics, primary_ip = scan_network_interfaces()
+    _hardware_context["nics"] = nics
+    _hardware_context["primary_ip"] = primary_ip
+    _hardware_context["disks"] = scan_disk_letters()
+    return _hardware_context
+
+
+def describe_hardware(sensor_id, parent_hardware):
+    """Return (hardware, detail, state) for one sensor identifier.
+
+    hardware is the device name, detail is a short disambiguator such as
+    "C: - disk 2" or "192.168.0.10 - 2.5 Gb/s", and state is the link state of a
+    network interface ("primary", "up", "idle", "down", "unknown") or "".
+    """
+    parts = [part for part in (sensor_id or "").split("/") if part]
+    kind = parts[0].lower() if parts else ""
+    index = parts[1] if len(parts) > 1 else ""
+    hardware = (parent_hardware or "").strip()
+    detail = ""
+    state = ""
+
+    if kind == "nic":
+        info = _hardware_context["nics"].get(hardware.lower())
+        if info:
+            state = info["state"]
+            pieces = [info["ipv4"] or "no address"]
+            if info["speed"] > 0:
+                pieces.append(_link_speed_text(info["speed"]))
+            detail = " - ".join(pieces)
+        else:
+            state = "unknown"
+            detail = "not reported by Windows"
+    elif kind in _DISK_KINDS:
+        try:
+            drive_letters = _hardware_context["disks"].get(int(index), [])
+        except (TypeError, ValueError):
+            drive_letters = []
+        pieces = []
+        if drive_letters:
+            pieces.append(" ".join(drive_letters))
+        if index:
+            pieces.append("disk %s" % index)
+        detail = " - ".join(pieces)
+
+    if not hardware:
+        hardware = kind.upper() if kind else ""
+    return hardware, detail, state
+
+
+def _wmi_hardware_name(sensor_id, hardware_names):
+    """Resolve a sensor identifier to its device using the longest matching prefix."""
+    identifier = (sensor_id or "").lower()
+    best_key = ""
+    for key in hardware_names:
+        if identifier.startswith(key + "/") and len(key) > len(best_key):
+            best_key = key
+    return hardware_names.get(best_key, "")
+
+
+def _direction_qualified_name(sensor_name, sensor_type, index):
+    """Name an unlabelled NIC counter, where index 0 and 1 are opposite directions."""
+    lowered = sensor_name.lower()
+    if any(word in lowered for word in ("upload", "download", "rx", "tx")):
+        return sensor_name
+    directions = {"0": "Download", "1": "Upload"} if sensor_type == "data" else {"0": "Upload", "1": "Download"}
+    direction = directions.get(index)
+    return f"{sensor_name} - {direction}" if direction else f"{sensor_name} #{index}"
+
+
+def build_display_name(sensor_name, hardware, sensor_id):
+    """Qualify a bare sensor name with the device it belongs to."""
+    if hardware and hardware.lower() not in sensor_name.lower():
+        return "%s [%s]" % (sensor_name, hardware)
+    if hardware:
+        return sensor_name
+    parts = (sensor_id or "").split("/")
+    if len(parts) > 1 and parts[1] and parts[1].lower() not in sensor_name.lower():
+        return "%s [%s]" % (sensor_name, parts[1])
+    return sensor_name
+
+
+def extract_sensors_from_tree(node, sensor_list=None, parent_hardware=None, depth=0):
     """
     Recursively extract all sensors from LibreHardwareMonitor REST API tree structure.
     The API returns a hierarchical tree where actual sensors have a 'SensorId' field.
     Tracks parent hardware name to provide better context for sensors.
+
+    The tree is Sensor > computer > hardware > sensor-type group > sensor, and
+    devices such as a super-I/O chip add another hardware level. Only the group
+    node directly above the sensors must be skipped, otherwise every reading ends
+    up labelled "[Load]" or "[Temperatures]" instead of its actual device.
     """
     if sensor_list is None:
         sensor_list = []
-
-    # Check if this node is a hardware device (has children but no SensorId)
-    # Hardware nodes have Text like "Intel Ethernet I219-V" or "NVIDIA GeForce RTX 3080"
-    current_hardware = parent_hardware
-    if "Children" in node and "SensorId" not in node:
-        # This might be a hardware node - use its name as parent for children
-        if node.get("Text") and node.get("Text") != "Sensor":
-            current_hardware = node.get("Text")
 
     # If this node has a SensorId, it's an actual sensor
     if "SensorId" in node:
         # Add parent hardware name to sensor for better identification
         sensor_copy = node.copy()
-        if current_hardware:
-            sensor_copy["_parent_hardware"] = current_hardware
+        if parent_hardware:
+            sensor_copy["_parent_hardware"] = parent_hardware
         sensor_list.append(sensor_copy)
+        return sensor_list
 
-    # Recursively process children
-    if "Children" in node and isinstance(node["Children"], list):
-        for child in node["Children"]:
-            extract_sensors_from_tree(child, sensor_list, current_hardware)
+    children = node.get("Children")
+    children = children if isinstance(children, list) else []
+
+    # A node whose children carry a SensorId is a sensor-type group ("Load",
+    # "Temperatures"), never a device. Depth 0 is the tree root and depth 1 is the
+    # computer name, so real hardware starts at depth 2.
+    is_group = any("SensorId" in child for child in children)
+    text = node.get("Text") or ""
+    current_hardware = parent_hardware
+    if depth >= 2 and text and not is_group:
+        current_hardware = text
+
+    for child in children:
+        extract_sensors_from_tree(child, sensor_list, current_hardware, depth + 1)
 
     return sensor_list
 
@@ -551,27 +752,13 @@ def discover_sensors_via_http(host, port):
                 short_name = generate_short_name_from_id(sensor_id, sensor_type, sensor_name)
 
                 # Build display name with device context
-                identifier_parts = sensor_id.split('/')
                 parent_hardware = sensor.get("_parent_hardware", "")
+                hardware, hardware_detail, nic_state = describe_hardware(sensor_id, parent_hardware)
+                display_name = build_display_name(sensor_name, hardware, sensor_id)
 
-                # For network sensors, use parent hardware name (actual NIC name)
-                if "nic" in sensor_id.lower() and parent_hardware:
-                    # Use friendly NIC name instead of GUID
-                    display_name = f"{sensor_name} [{parent_hardware}]"
-                elif len(identifier_parts) > 1:
-                    device_info = identifier_parts[1]
-                    if device_info.lower() not in sensor_name.lower():
-                        display_name = f"{sensor_name} [{device_info}]"
-                    else:
-                        display_name = sensor_name
-                else:
-                    display_name = sensor_name
-
-                # Check if this is an active network interface (has traffic)
-                is_active_nic = False
-                if "nic" in sensor_id.lower() and sensor_type == "throughput":
-                    if sensor_value > 0:
-                        is_active_nic = True
+                # The interface carrying the default route is the one the user
+                # almost always means by "my network card".
+                is_active_nic = nic_state == "primary"
 
                 # Reclassify ambiguous types based on device context
                 # Memory metrics are tagged as "data" but should be in "system"
@@ -596,8 +783,11 @@ def discover_sensors_via_http(host, port):
                     "wmi_sensor_name": sensor_name,
                     "custom_label": "",
                     "current_value": int(sensor_value),
-                    "is_active_nic": is_active_nic,  # True if network interface has traffic
-                    "parent_hardware": parent_hardware  # Hardware name (useful for NICs)
+                    "is_active_nic": is_active_nic,  # True for the default-route interface
+                    "parent_hardware": parent_hardware,  # Raw tree name
+                    "hardware": hardware,  # Device this reading belongs to
+                    "hardware_detail": hardware_detail,  # Drive letters, IP address, link speed
+                    "nic_state": nic_state  # primary / up / idle / down / unknown
                 }
 
                 # GPU sensors go to the dedicated "gpu" category.
@@ -1296,6 +1486,10 @@ def discover_sensors():
 
     print(f"  Found {len(sensor_database['system'])} system metrics")
 
+    # Drive letters and interface link state are what make look-alike sensors
+    # ("Temperature", "Network Utilization") identifiable in the sensor list.
+    refresh_hardware_context()
+
     # Discover LibreHardwareMonitor sensors
     print("\n[2/2] Discovering hardware sensors (LibreHardwareMonitor)...")
 
@@ -1336,67 +1530,43 @@ def discover_sensors():
         # Reset name tracker to ensure fresh unique names
         reset_generated_names()
 
+        # The Hardware class carries the friendly device names ("Samsung SSD 980
+        # PRO 1TB", "Wi-Fi") that the Sensor class only hints at through its
+        # identifier prefix.
+        hardware_names = {}
+        try:
+            for device in w.Hardware():
+                identifier = (device.Identifier or "").rstrip("/").lower()
+                if identifier and device.Name:
+                    hardware_names[identifier] = device.Name
+        except Exception as exc:
+            print(f"  (hardware name lookup unavailable: {exc})")
+
         for sensor in sensors:
             # Generate short name for ESP32 display (using same function as REST API)
             short_name = generate_short_name_from_id(sensor.Identifier, sensor.SensorType.lower(), sensor.Name)
 
-            # Enhance display name with identifier context for GUI
-            display_name = sensor.Name
+            # Enhance display name with device context for the GUI
+            parent_hardware = _wmi_hardware_name(sensor.Identifier, hardware_names)
+            hardware, hardware_detail, nic_state = describe_hardware(sensor.Identifier, parent_hardware)
+            sensor_type_lower = sensor.SensorType.lower()
+
+            # Some NIC counters are named only "Data" or "Throughput"; their
+            # identifier index is the only hint at the direction.
+            qualified_name = sensor.Name
             identifier_parts = sensor.Identifier.split('/')
-            if len(identifier_parts) > 1:
-                device_info = identifier_parts[1]
-                # Add device context to display name for clarity
-                if device_info.lower() not in display_name.lower():
-                    display_name = f"{sensor.Name} [{device_info}]"
-
-                # Special handling for network data metrics (upload/download disambiguation)
-                if sensor.SensorType.lower() == "data" and ('nic' in device_info.lower() or 'network' in device_info.lower()):
-                    # Extract data metric index to distinguish upload/download
-                    # /nic/0/data/0 = Download, /nic/0/data/1 = Upload, etc.
-                    if len(identifier_parts) >= 4:
-                        data_index = identifier_parts[-1]
-
-                        # Check if name already has Upload/Download
-                        name_lower = sensor.Name.lower()
-                        if 'upload' not in name_lower and 'download' not in name_lower and 'rx' not in name_lower and 'tx' not in name_lower:
-                            # Add Upload/Download based on data index
-                            if data_index == '0':
-                                display_name = f"{sensor.Name} - Download [{device_info}]"
-                            elif data_index == '1':
-                                display_name = f"{sensor.Name} - Upload [{device_info}]"
-                            else:
-                                display_name = f"{sensor.Name} #{data_index} [{device_info}]"
-
-                # Special handling for network throughput metrics (upload/download disambiguation)
-                elif sensor.SensorType.lower() == "throughput" and ('nic' in device_info.lower() or 'network' in device_info.lower()):
-                    # Extract throughput metric index to distinguish upload/download
-                    # /nic/0/throughput/0 = Upload Speed, /nic/0/throughput/1 = Download Speed
-                    if len(identifier_parts) >= 4:
-                        throughput_index = identifier_parts[-1]
-
-                        # Check if name already has Upload/Download
-                        name_lower = sensor.Name.lower()
-                        if 'upload' not in name_lower and 'download' not in name_lower and 'rx' not in name_lower and 'tx' not in name_lower:
-                            # Add Upload/Download based on throughput index
-                            if throughput_index == '0':
-                                display_name = f"{sensor.Name} - Upload [{device_info}]"
-                            elif throughput_index == '1':
-                                display_name = f"{sensor.Name} - Download [{device_info}]"
-                            else:
-                                display_name = f"{sensor.Name} #{throughput_index} [{device_info}]"
+            if len(identifier_parts) >= 4 and sensor_type_lower in ("data", "throughput"):
+                device_info = identifier_parts[1].lower()
+                if 'nic' in device_info or 'network' in device_info:
+                    qualified_name = _direction_qualified_name(
+                        sensor.Name, sensor_type_lower, identifier_parts[-1])
+            display_name = build_display_name(qualified_name, hardware, sensor.Identifier)
 
             # Get current sensor value
             try:
                 current_value = int(sensor.Value) if sensor.Value else 0
             except:
                 current_value = 0
-
-            # Check if this is an active network interface (has traffic)
-            is_active_nic = False
-            sensor_type_lower = sensor.SensorType.lower()
-            if "nic" in sensor.Identifier.lower() and sensor_type_lower == "throughput":
-                if current_value > 0:
-                    is_active_nic = True
 
             sensor_info = {
                 "name": short_name,
@@ -1405,10 +1575,14 @@ def discover_sensors():
                 "type": sensor_type_lower,
                 "unit": get_unit_from_type(sensor.SensorType),
                 "wmi_identifier": sensor.Identifier,
-                "wmi_sensor_name": sensor.Name,
+                "wmi_sensor_name": qualified_name,
                 "custom_label": "",
                 "current_value": current_value,
-                "is_active_nic": is_active_nic
+                "is_active_nic": nic_state == "primary",
+                "parent_hardware": parent_hardware,
+                "hardware": hardware,
+                "hardware_detail": hardware_detail,
+                "nic_state": nic_state
             }
 
             # GPU sensors go to the dedicated "gpu" category.
