@@ -13,10 +13,10 @@ StatNode is the color evolution of my
 
 ## Monitor faces
 
-Six layouts, all driven by the same eight ordered metric slots (slot 1 = hero).
-Switch face live from the web portal. How many readings appear is simply how
-many slots you bind, and every face lays itself out from that count, so there is
-no separate "tile count" setting to disagree with your bindings.
+Eight layouts, all driven by the same eight ordered metric slots (slot 1 =
+hero). Switch face live from the web portal. How many readings appear is simply
+how many slots you bind, and every face lays itself out from that count, so
+there is no separate "tile count" setting to disagree with your bindings.
 
 Values are rendered from native font faces sized to the space they have, never
 magnified, so the big readings stay crisp on the small square panels as well as
@@ -30,6 +30,30 @@ on the 320x480 Guition.
 
 <sub>Captures are pulled from the device via `/screen.bmp`; the greenish cast is
 RGB332 quantization in the capture only; the real panel blacks are true black.</sub>
+
+### Glass faces
+
+Two more faces render every card as a pane of glass over a generated backdrop:
+**Aero glass tiles** (a grid of panes, each with its own chart) and **Liquid
+glass duo** (two hero panes over a grid of pills). The backdrop is a smooth
+vertical gradient, composed well above the panel's color depth and dithered on
+the way down to it, so the panes stay banding-free.
+
+Both take a **colorway**, set on the portal's Display page: *Default*, which
+follows your background color as smoked glass, and two frosted presets. Gloss,
+bow and chart fill are sliders on the same card and apply live as you drag them.
+
+| Default | Frosted glass dark | Frosted glass light |
+|---|---|---|
+| ![Aero glass tiles, default colorway](docs/images/face-aero-default.png) | ![Aero glass tiles, frosted dark](docs/images/face-aero-frost-dark.png) | ![Aero glass tiles, frosted light](docs/images/face-aero-frost-light.png) |
+| ![Liquid glass duo, default colorway](docs/images/face-liquid-default.png) | ![Liquid glass duo, frosted dark](docs/images/face-liquid-frost-dark.png) | ![Liquid glass duo, frosted light](docs/images/face-liquid-frost-light.png) |
+
+<sub>Top row Aero, bottom row Liquid, captured on the 320x480 Guition. That
+board has PSRAM, so these are true 16-bit captures with no color shift.</sub>
+
+Charts on every face glide between packets rather than stepping, and the frame
+interval is paced off what the last frame actually cost, so a heavy face on a
+big panel slows itself down instead of starving WiFi.
 
 When the PC goes offline the screen shows an idle clock: **Standard**,
 **Breakout**, or an animated **Runner** face (portal, Clock page).
