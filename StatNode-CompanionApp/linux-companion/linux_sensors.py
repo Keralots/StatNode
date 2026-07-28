@@ -51,6 +51,64 @@ network_last_time = None
 nvml_handles = {}
 
 
+def _primary_ipv4():
+    """Return the local address the default route would use. Sends no traffic."""
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.settimeout(0.4)
+        sock.connect(("8.8.8.8", 80))
+        return sock.getsockname()[0]
+    except Exception:
+        return ""
+    finally:
+        try:
+            sock.close()
+        except Exception:
+            pass
+
+
+def _link_speed_text(speed_mbps):
+    """Format a psutil link speed (Mbit/s) for the sensor list."""
+    if speed_mbps >= 1000:
+        text = ("%.1f" % (speed_mbps / 1000.0)).rstrip("0").rstrip(".")
+        return "%s Gb/s" % text
+    return "%d Mb/s" % speed_mbps
+
+
+def scan_network_interfaces():
+    """Describe every interface so identical network sensors can be told apart."""
+    primary_ip = _primary_ipv4()
+    result = {}
+    try:
+        stats = psutil.net_if_stats()
+        addresses = psutil.net_if_addrs()
+    except Exception as exc:
+        print(f"  (interface lookup unavailable: {exc})")
+        return result
+
+    for name, stat in stats.items():
+        ipv4 = ""
+        for address in addresses.get(name, []):
+            if address.family == socket.AF_INET and not address.address.startswith("169.254."):
+                ipv4 = address.address
+                break
+        up = bool(stat.isup)
+        if primary_ip and ipv4 == primary_ip:
+            state = "primary"
+        elif up and ipv4:
+            state = "up"
+        elif up:
+            state = "idle"
+        else:
+            state = "down"
+        pieces = [ipv4 or "no address"]
+        speed = int(stat.speed or 0)
+        if speed > 0:
+            pieces.append(_link_speed_text(speed))
+        result[name] = {"state": state, "detail": " - ".join(pieces)}
+    return result
+
+
 def discover_sensors():
     """
     Discover all available sensors from psutil on Linux
@@ -164,6 +222,8 @@ def discover_sensors():
                         "unit": "C",
                         "sensor_key": sensor_name,
                         "sensor_label": entry.label,
+                        "wmi_sensor_name": entry.label or "Temperature",
+                        "hardware": sensor_name,
                         "custom_label": "",
                         "current_value": current_value
                     }
@@ -197,6 +257,8 @@ def discover_sensors():
                         "unit": "RPM",
                         "sensor_key": sensor_name,
                         "sensor_label": entry.label,
+                        "wmi_sensor_name": entry.label or "Fan",
+                        "hardware": sensor_name,
                         "custom_label": "",
                         "current_value": current_value
                     }
@@ -217,62 +279,81 @@ def discover_sensors():
 
     try:
         net_io = psutil.net_io_counters(pernic=True)
+        # Link state tells the active interface apart from the tunnels, bridges,
+        # and container adapters that carry identical-looking counters.
+        interface_state = scan_network_interfaces()
 
         for interface, stats in net_io.items():
             # Skip loopback
             if interface == "lo":
                 continue
 
+            info = interface_state.get(interface, {})
+            context = {
+                "hardware": interface,
+                "hardware_detail": info.get("detail", ""),
+                "nic_state": info.get("state", "unknown"),
+                "is_active_nic": info.get("state") == "primary",
+            }
+
             # Total Data Uploaded
             sensor_database["data"].append({
                 "name": f"{interface[:7]}_U",
                 "display_name": f"Data Uploaded - {interface}",
+                "wmi_sensor_name": "Data Uploaded",
                 "source": "psutil_net",
                 "type": "data",
                 "unit": "MB",
                 "interface": interface,
                 "metric": "bytes_sent",
                 "custom_label": "",
-                "current_value": int(stats.bytes_sent / (1024**2))  # MB
+                "current_value": int(stats.bytes_sent / (1024**2)),  # MB
+                **context
             })
 
             # Total Data Downloaded
             sensor_database["data"].append({
                 "name": f"{interface[:7]}_D",
                 "display_name": f"Data Downloaded - {interface}",
+                "wmi_sensor_name": "Data Downloaded",
                 "source": "psutil_net",
                 "type": "data",
                 "unit": "MB",
                 "interface": interface,
                 "metric": "bytes_recv",
                 "custom_label": "",
-                "current_value": int(stats.bytes_recv / (1024**2))  # MB
+                "current_value": int(stats.bytes_recv / (1024**2)),  # MB
+                **context
             })
 
             # Upload Speed (will be calculated dynamically)
             sensor_database["throughput"].append({
                 "name": f"{interface[:7]}_U",
                 "display_name": f"Upload Speed - {interface}",
+                "wmi_sensor_name": "Upload Speed",
                 "source": "psutil_net_speed",
                 "type": "throughput",
                 "unit": "MB/s",
                 "interface": interface,
                 "metric": "bytes_sent",
                 "custom_label": "",
-                "current_value": 0  # Will be calculated
+                "current_value": 0,  # Will be calculated
+                **context
             })
 
             # Download Speed (will be calculated dynamically)
             sensor_database["throughput"].append({
                 "name": f"{interface[:7]}_D",
                 "display_name": f"Download Speed - {interface}",
+                "wmi_sensor_name": "Download Speed",
                 "source": "psutil_net_speed",
                 "type": "throughput",
                 "unit": "MB/s",
                 "interface": interface,
                 "metric": "bytes_recv",
                 "custom_label": "",
-                "current_value": 0  # Will be calculated
+                "current_value": 0,  # Will be calculated
+                **context
             })
 
             net_count += 4

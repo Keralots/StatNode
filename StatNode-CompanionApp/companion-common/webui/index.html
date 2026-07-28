@@ -16,6 +16,15 @@
     .sensor-row.selected{border-color:var(--accent-line);background:var(--accent-soft)}.sensor-row .check-box{margin-top:2px}.sensor-toggle{padding:0;margin:0}
     .sensor-copy{min-width:0}.sensor-name{display:flex;align-items:baseline;gap:8px;min-width:0}.sensor-name strong{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.sensor-name code{color:var(--dim);font-size:10px}.sensor-reading{margin-left:auto;flex:none;color:var(--text);font-family:var(--mono);font-size:12px;font-variant-numeric:tabular-nums}
     .sensor-meta{color:var(--dim);font-size:12px;margin-top:2px}.sensor-alias{margin-top:10px}.sensor-alias input{padding:8px 10px;font-size:13px;max-width:none}
+    .sensor-hw{display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-top:4px;min-width:0}
+    .sensor-hw .hw-name{font-size:12px;color:var(--ink-soft);font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+    .sensor-hw .hw-detail{font-family:var(--mono);font-size:11px;color:var(--dim)}
+    .nic-badge{font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase;padding:1px 7px;border-radius:999px;border:1px solid var(--line-2);background:var(--inset);color:var(--mute);flex:none}
+    .nic-badge.is-primary{border-color:var(--accent-line);background:var(--accent-soft);color:var(--accent);font-weight:700}
+    .nic-badge.is-up{border-color:var(--line-2);color:var(--ink-soft)}
+    .nic-badge.is-idle,.nic-badge.is-unknown{border-color:var(--warn);color:var(--warn);background:transparent}
+    .nic-badge.is-down{color:var(--faint);background:transparent}
+    .sensor-row.nic-primary{border-color:var(--accent-line);box-shadow:inset 3px 0 0 var(--accent)}
     .selected-chip{cursor:default}.selected-chip button{border:0;background:transparent;color:var(--dim);cursor:pointer;font-size:16px;line-height:1;padding:0 3px}.selected-chip button:hover{color:var(--err)}
     .device-grid{display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:18px;align-items:start}.device-preview-column{position:sticky;top:calc(var(--topbar-h) + 18px)}
     .device-preview{background:#090a09;border:1px solid var(--line);border-radius:var(--r-md);padding:12px;min-height:280px;display:grid;place-items:center;overflow:hidden}

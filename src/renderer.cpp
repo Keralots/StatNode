@@ -3190,6 +3190,34 @@ static void drawGlassDuoScreen(bool fr) {
   if (pillH < 16) return;
   const bool poff = ensureSprite(gGlassB, gGlassBW, gGlassBH, pillW, pillH);
 
+  // Big panels trade the pill's floor meter for a real chart. At 320x480 a pill
+  // is 80-105px tall against the 40px it gets at 240x240, so the name and the
+  // reading move up into a row of their own and the plot takes the floor - the
+  // same two-part read the bands above already have. The small panels keep the
+  // meter: a 15px plot there is a smudge, not a series.
+  // Sprite only. Without one the chart would land on the panel through
+  // per-pixel drawPixel, which is thousands of windowed SPI writes per pill.
+  const int16_t chartInset = 13;
+  int16_t pillTextH = pillH;
+  int16_t pillChartH = 0;
+  if (big && poff) {
+    // Just under half the pill for the text. Less than that and the value
+    // drops a rung or two off the ladder for no visible gain in the plot: at
+    // 105px the reading fits a 48px face on width alone, and it is the row
+    // height that decides which one it actually gets.
+    int16_t th = (int16_t)((pillH * 48) / 100);
+    if (th < 22) th = 22;
+    if (th > 52) th = 52;
+    const int16_t ch = (int16_t)(pillH - th - chartInset);
+    if (ch >= 16) { pillTextH = th; pillChartH = ch; }
+  }
+  const bool pillChart = pillChartH > 0;
+  // Height the value may grow into. With a chart below, that is the text row
+  // and NOT the pill - fitting to the pill would pick a face the row cannot
+  // hold and the plot would have digits hanging into it.
+  const int16_t pillValueBand = pillChart ? (int16_t)(pillTextH - 6)
+                                          : (int16_t)(pillH - 12);
+
   // Uniform value type across the pills - see the font ladder notes. This is
   // what stops a "24 GB" pill rendering a rung under the "38 %" pill beside it.
   uint8_t pillRung = 0;
@@ -3202,7 +3230,7 @@ static void drawGlassDuoScreen(bool fr) {
     const int16_t uW = (int16_t)tft.textWidth(probeText.unit);
     char pr[12];
     slotProbe(*vis[vi].slot, *vis[vi].metric, pr, sizeof(pr));
-    const uint8_t r = fitValueRung(tft, pr, pillW - 34 - lW - uW, pillH - 12);
+    const uint8_t r = fitValueRung(tft, pr, pillW - 34 - lW - uW, pillValueBand);
     if (r > pillRung) pillRung = r;
   }
   const FontID pillValueFont = VALUE_LADDER[pillRung];
@@ -3244,7 +3272,44 @@ static void drawGlassDuoScreen(bool fr) {
     char key[16];
     snprintf(key, sizeof(key), "%s%s%u%u", text.value, warn ? "!" : "",
              pillRung, pillUnitRung);
-    if (!gaugeTextChanged(x + 1, y + 1, key, label, fr)) continue;
+    // The text half still repaints only when the reading changes; the plot has
+    // to keep up with the scroll, so a charted pill stays in the loop either
+    // way and takes the cheaper of the two paths below.
+    const bool pillTextChanged = gaugeTextChanged(x + 1, y + 1, key, label, fr);
+    if (!pillTextChanged && !pillChart) continue;
+
+    if (!pillTextChanged) {
+      // Plot band only: everything outside it - rim, corners, the text row -
+      // is already on the panel from the last full pass and does not move.
+      // The band is composed at full pill width because glassBlit pushes the
+      // sprite buffer with the sprite's own stride, so a narrower window would
+      // read the rows skewed.
+      GlassCanvas cb = glassCanvasFor(gGlassB, &gGlassB, 0, -pillTextH);
+      // The plot repaints every pixel of its own rect from the pane row it
+      // sits on, so laying the pane down under it first writes those pixels
+      // twice - two thirds of the band, every frame. Compose only the two side
+      // margins the plot does not cover.
+      // NOT while the ring is still filling: the series then starts partway
+      // across and glassChart leaves the columns to its left untouched, which
+      // on a shared sprite is whatever the previous pill wrote there. The ring
+      // is full about a minute after boot and this is the steady state.
+      const SlotHistory& phist = pcHistory[vis[vi].slotIdx];
+      if (phist.count >= PC_HISTORY_LEN) {
+        glassPaneWindow(cb, 0, pillTextH, chartInset, pillChartH,
+                        y, pillW, pillH, 12, paneAccent, liquid, warnRim);
+        glassPaneWindow(cb, pillW - chartInset, pillTextH, chartInset, pillChartH,
+                        y, pillW, pillH, 12, paneAccent, liquid, warnRim);
+      } else {
+        glassPaneWindow(cb, 0, pillTextH, pillW, pillChartH, y, pillW, pillH, 12,
+                        paneAccent, liquid, warnRim);
+      }
+      glassChart(cb, phist, vis[vi].slotIdx,
+                 chartInset, pillTextH, pillW - 2 * chartInset, pillChartH,
+                 paneAccent, paneAccent, y, pillTextH, pillH, 8,
+                 liquid, advance, scroll);
+      glassBlit(gGlassB, x, y + pillTextH, pillW, pillChartH);
+      continue;
+    }
 
     lgfx::LovyanGFX& g = poff ? (lgfx::LovyanGFX&)gGlassB : (lgfx::LovyanGFX&)tft;
     const int16_t gx = poff ? 0 : x, gy = poff ? 0 : y;
@@ -3257,7 +3322,10 @@ static void drawGlassDuoScreen(bool fr) {
     // Name and reading share one centreline. Stacking them needs ~34px and a
     // pill is often half that, which is what clipped the labels off the
     // bottom row; the meter then takes the floor on its own.
-    const int16_t cy = gy + pillH / 2 - 2;
+    // With a chart the pair rides the top row instead of the pill's middle,
+    // which is the room the plot needs underneath.
+    const int16_t cy = pillChart ? (int16_t)(gy + pillTextH / 2)
+                                 : (int16_t)(gy + pillH / 2 - 2);
     setFont(g, FONT_SMALL);
     g.setTextDatum(ML_DATUM);
     g.setTextColor(glassLabelInk(accent565));
@@ -3283,10 +3351,19 @@ static void drawGlassDuoScreen(bool fr) {
     g.drawString(text.value, gx + pillW - 11 - unitW - 4, cy);
     g.setTextDatum(TL_DATUM);
 
+    // Plot on the capsule floor, composed into the same sprite as the text so
+    // the pill still reaches the panel in one push.
+    if (pillChart) {
+      glassChart(c, pcHistory[vis[vi].slotIdx], vis[vi].slotIdx,
+                 chartInset, pillTextH, pillW - 2 * chartInset, pillChartH,
+                 paneAccent, paneAccent, y, pillTextH, pillH, 8,
+                 liquid, advance, scroll);
+    }
+
     // Meter on the capsule floor, drawn through the compositor so its ends
     // stay soft against the pane instead of clipping to a hard rectangle.
     const int16_t mx = 13, mw = pillW - 26, my = pillH - 6;
-    if (mw > 12 && my > 0) {
+    if (!pillChart && mw > 12 && my > 0) {
       const float frac = slotFraction(m.value, scale);
       const int32_t fillQ8 = (int32_t)(frac * (float)(mw << 8));
       const Rgb fillC = rgbFrom565(warn ? dispSettings.warnColor : accent565);
