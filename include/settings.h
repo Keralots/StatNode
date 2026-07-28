@@ -103,7 +103,7 @@ inline uint8_t normalizeDisplayStyle(uint8_t style) {
 enum ClockFace : uint8_t {
   CLOCK_FACE_STANDARD = 0,
   CLOCK_FACE_BREAKOUT = 1,
-  CLOCK_FACE_MARIO = 2,
+  CLOCK_FACE_RUNNER = 2,
   CLOCK_FACE_COUNT
 };
 

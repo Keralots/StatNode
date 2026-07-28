@@ -8,7 +8,7 @@
 #include "display_ui.h"
 #include "display_gauges.h"
 #include "clock_mode.h"
-#include "clock_mario.h"
+#include "clock_runner.h"
 #include "clock_pong.h"
 #include "pc_metrics.h"
 #include "settings.h"
@@ -38,7 +38,7 @@ void setScreenState(ScreenState state) {
   tft.fillScreen(dispSettings.bgColor);
   resetGaugeTextCache();
   resetClock();
-  resetMarioClock();
+  resetRunnerClock();
   resetPongClock();
   markScreenCleared();
   markFrameDirty();
@@ -245,7 +245,7 @@ static bool gScreenCleared = true;
 void markScreenCleared() {
   gScreenCleared = true;
   resetClock();
-  resetMarioClock();
+  resetRunnerClock();
   resetPongClock();
 }
 
@@ -3396,9 +3396,9 @@ static void drawIdleClock() {
       if (gCaptureRender) drawPongClockSnapshot();
       else tickPongClock();
       break;
-    case CLOCK_FACE_MARIO:
-      if (gCaptureRender) drawMarioClockSnapshot();
-      else tickMarioClock();
+    case CLOCK_FACE_RUNNER:
+      if (gCaptureRender) drawRunnerClockSnapshot();
+      else tickRunnerClock();
       break;
     default:
       if (gCaptureRender) drawClockSnapshot();
@@ -3431,7 +3431,7 @@ void updateDisplay() {
   const bool idleVisible = currentScreen == SCREEN_CLOCK ||
                            (currentScreen == SCREEN_MONITOR && !pcData.online);
   const bool animatedClock = clockFace == CLOCK_FACE_BREAKOUT ||
-                             clockFace == CLOCK_FACE_MARIO;
+                             clockFace == CLOCK_FACE_RUNNER;
   if (idleVisible && animatedClock) {
     if (gCaptureRender) {
       drawIdleClock();

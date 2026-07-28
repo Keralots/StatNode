@@ -314,7 +314,7 @@ void saveLedSettings() {
 }
 
 void saveSettings() {
-  // Keep the old field coherent for downgrade compatibility. Mario maps to
+  // Keep the old field coherent for downgrade compatibility. Runner maps to
   // Standard on firmware versions that predate the dedicated scalar.
   dispSettings.pongClock = clockFace == CLOCK_FACE_BREAKOUT;
   sanitizeLedPin();

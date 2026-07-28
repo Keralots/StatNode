@@ -32,7 +32,7 @@ on the 320x480 Guition.
 RGB332 quantization in the capture only; the real panel blacks are true black.</sub>
 
 When the PC goes offline the screen shows an idle clock: **Standard**,
-**Breakout**, or an animated **Mario** face (portal, Clock page).
+**Breakout**, or an animated **Runner** face (portal, Clock page).
 
 ## Web portal
 

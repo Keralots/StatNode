@@ -1153,7 +1153,7 @@ static void handleApiStatus() {
   doc["style"]     = displayStyle;
   switch (clockFace) {
     case CLOCK_FACE_BREAKOUT: doc["clock_face"] = "breakout"; break;
-    case CLOCK_FACE_MARIO:    doc["clock_face"] = "mario"; break;
+    case CLOCK_FACE_RUNNER:   doc["clock_face"] = "runner"; break;
     default:                  doc["clock_face"] = "standard"; break;
   }
   doc["backlight"] = currentBacklightLevel();
