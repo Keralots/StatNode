@@ -16,12 +16,17 @@ TouchSettings touchSettings;
 LedSettings ledSettings;
 ThemeSettings themeSettings;
 uint8_t displayStyle = STYLE_DEFAULT;
+uint8_t chartSmoothing = 0;
+uint8_t glassGlossPct = GLASS_GLOSS_PCT_DEFAULT;
+uint8_t glassBowPct = GLASS_BOW_PCT_DEFAULT;
+uint8_t glassChartFillPct = GLASS_CHART_FILL_PCT_DEFAULT;
 uint8_t clockFace = CLOCK_FACE_STANDARD;
 uint8_t sparkRedrawSec = SPARK_REDRAW_MS / 1000;
 
 static Preferences prefs;
 static const uint8_t BACKLIGHT_SETTINGS_VERSION = 1;
-static const uint8_t TOUCH_SETTINGS_VERSION = 1;
+// v2 widened styleMask to 16 bits so the glass faces (styles 7 and 8) fit.
+static const uint8_t TOUCH_SETTINGS_VERSION = 2;
 static const uint8_t LED_SETTINGS_VERSION = 1;
 static const uint8_t THEME_SETTINGS_VERSION = 1;
 
@@ -203,6 +208,22 @@ void loadSettings() {
     TouchSettings stored;
     prefs.getBytes("touch", &stored, sizeof(stored));
     if (stored.version == TOUCH_SETTINGS_VERSION) touchSettings = stored;
+  } else if (prefs.getBytesLength("touch") == sizeof(TouchSettingsV1)) {
+    // Pre-glass blob: same fields, 8-bit mask, rememberStyle and styleMask in
+    // the opposite order. Copy field by field rather than losing a configured
+    // pad to a size mismatch on the OTA that added the glass faces.
+    TouchSettingsV1 old;
+    prefs.getBytes("touch", &old, sizeof(old));
+    if (old.version == 1) {
+      touchSettings.version       = TOUCH_SETTINGS_VERSION;
+      touchSettings.enabled       = old.enabled;
+      touchSettings.pin           = old.pin;
+      touchSettings.activeHigh    = old.activeHigh;
+      touchSettings.shortAction   = old.shortAction;
+      touchSettings.longAction    = old.longAction;
+      touchSettings.rememberStyle = old.rememberStyle;
+      touchSettings.styleMask     = old.styleMask;
+    }
   }
   if (prefs.getBytesLength("led") == sizeof(LedSettings)) {
     LedSettings stored;
@@ -227,6 +248,14 @@ void loadSettings() {
   sparkRedrawSec = prefs.getUChar("sparks", SPARK_REDRAW_MS / 1000);
   if (sparkRedrawSec < 1) sparkRedrawSec = 1;
   if (sparkRedrawSec > 60) sparkRedrawSec = 60;
+  chartSmoothing = prefs.getUChar("chartsm", 0);
+  if (chartSmoothing > CHART_SMOOTH_MAX) chartSmoothing = 0;
+  glassGlossPct = prefs.getUChar("glossa", GLASS_GLOSS_PCT_DEFAULT);
+  if (glassGlossPct > 100) glassGlossPct = GLASS_GLOSS_PCT_DEFAULT;
+  glassBowPct = prefs.getUChar("glossbow", GLASS_BOW_PCT_DEFAULT);
+  if (glassBowPct > 100) glassBowPct = GLASS_BOW_PCT_DEFAULT;
+  glassChartFillPct = prefs.getUChar("chartfill", GLASS_CHART_FILL_PCT_DEFAULT);
+  if (glassChartFillPct > 100) glassChartFillPct = GLASS_CHART_FILL_PCT_DEFAULT;
   backlightSettings.nightEnabled = backlightSettings.nightEnabled ? 1 : 0;
   backlightSettings.nightOfflineOff = backlightSettings.nightOfflineOff ? 1 : 0;
   if (backlightSettings.nightStartMinute >= 24 * 60)
@@ -242,7 +271,7 @@ void loadSettings() {
     touchSettings.shortAction = TOUCH_ACTION_NEXT_STYLE;
   if (touchSettings.longAction >= TOUCH_ACTION_COUNT)
     touchSettings.longAction = TOUCH_ACTION_TOGGLE_POWER;
-  const uint8_t storedTouchStyleMask = touchSettings.styleMask;
+  const uint16_t storedTouchStyleMask = touchSettings.styleMask;
   touchSettings.styleMask &= STYLE_ACTIVE_MASK;
   if (touchSettings.styleMask == 0)
     touchSettings.styleMask = 1u << STYLE_DEFAULT;
@@ -305,6 +334,10 @@ void saveSettings() {
   prefs.putUChar("style", displayStyle);
   prefs.putUChar("clockface", clockFace);
   prefs.putUChar("sparks", sparkRedrawSec);
+  prefs.putUChar("chartsm", chartSmoothing);
+  prefs.putUChar("glossa", glassGlossPct);
+  prefs.putUChar("glossbow", glassBowPct);
+  prefs.putUChar("chartfill", glassChartFillPct);
   prefs.end();
 }
 

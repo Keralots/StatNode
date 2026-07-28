@@ -79,6 +79,19 @@ static void parsePacket(const char* json) {
     }
 
     m.value = mo["value"] | 0.0f;
+
+    // Throughput arrives PRE-MULTIPLIED BY TEN. The Windows companion packs
+    // NIC readings as an integer number of tenths of a KB/s so one decimal
+    // survives the wire (see _parse_rest_value in statnode_companion.py: "the
+    // ESP32 divides by 10 when showing"), and this firmware never did - so a
+    // 366.8 KB/s link rendered as "3668 KB/s". Undo it once, here, so the
+    // history rings, the meters and every face see real KB/s.
+    //
+    // Keyed on the exact "KB/s" string because that scaling belongs to that
+    // one unit: the Linux companion reports "MB/s" unscaled, and both must
+    // stay correct.
+    if (strcmp(m.unit, "KB/s") == 0) m.value /= 10.0f;
+
     pcData.count++;
   }
 

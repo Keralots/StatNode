@@ -62,6 +62,12 @@ void forceDisplayRedraw(bool clearFirst = false);
 // the panel's pacing state (packet stamps, layout counts, smoothing, cached
 // text widths) untouched so the capture never disturbs the live display.
 void setCaptureRender(bool on);
+
+// Portal live preview for the Glass surface sliders. The persisted settings are
+// NOT touched: an override sits in front of them until it is cleared, so
+// /api/config keeps reporting what is actually stored and the portal's Revert
+// genuinely restores the panel. Saving the display form clears the override.
+void setGlassPreview(bool on, uint8_t glossPct, uint8_t bowPct, uint8_t fillPct);
 // Tell the renderer the panel content was wiped (e.g. after a color change
 // repaint) so styles repaint their static chrome on the next frame.
 void markScreenCleared();
@@ -69,6 +75,13 @@ void markScreenCleared();
 // and how many allocation attempts have failed since boot.
 bool sparkSpriteActive();
 uint16_t sparkSpriteFails();
+
+// Monitor frame compose+blit cost, microseconds. The glass faces run a
+// per-pixel compositor at GLASS_UPDATE_MS, so this is what says whether the
+// frame budget holds on a given board.
+uint32_t monitorFrameUs();
+uint32_t monitorFrameMaxUs();
+void resetMonitorFrameStats();
 // Companion wobble diagnostics: raw per-frame changes seen vs debounced
 // transitions the layout actually reacted to.
 uint16_t rawNChanges();

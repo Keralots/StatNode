@@ -72,13 +72,25 @@ enum DisplayStyle : uint8_t {
   STYLE_STRIPS      = 4,  // full-width sparkline lane per metric
   STYLE_DUO         = 5,  // slots 1+2 as hero bands + compact grid
   STYLE_PULSE       = 6,  // accent-washed blocks, tint follows load
+  STYLE_GLASS_TILES = 7,  // Tiles geometry on Aero glass panes
+  STYLE_GLASS_DUO   = 8,  // Duo geometry on edge-lit glass capsules
   STYLE_COUNT
 };
 
 constexpr uint8_t STYLE_DEFAULT = STYLE_TILES;
-constexpr uint8_t STYLE_ACTIVE_MASK =
+// Widened to 16 bits when the glass faces pushed the highest style past bit 7.
+// Everything that stores or transports a style mask must match this width.
+constexpr uint16_t STYLE_ACTIVE_MASK =
   (1u << STYLE_BIG_NUMBERS) | (1u << STYLE_TILES) | (1u << STYLE_HERO) |
-  (1u << STYLE_STRIPS) | (1u << STYLE_DUO) | (1u << STYLE_PULSE);
+  (1u << STYLE_STRIPS) | (1u << STYLE_DUO) | (1u << STYLE_PULSE) |
+  (1u << STYLE_GLASS_TILES) | (1u << STYLE_GLASS_DUO);
+
+// True for the faces that paint a gradient backdrop instead of a flat fill.
+// Anything that would otherwise clear a region to dispSettings.bgColor has to
+// branch on this - a flat clear punches a visible hole through the gradient.
+inline bool styleUsesGlass(uint8_t style) {
+  return style == STYLE_GLASS_TILES || style == STYLE_GLASS_DUO;
+}
 
 inline uint8_t normalizeDisplayStyle(uint8_t style) {
   return (style >= STYLE_BIG_NUMBERS && style < STYLE_COUNT)
@@ -107,6 +119,19 @@ enum TouchAction : uint8_t {
 // TTP223 settings use their own versioned blob so adding touch support cannot
 // invalidate existing display or network configuration after OTA.
 struct TouchSettings {
+  uint8_t  version;
+  uint8_t  enabled;
+  uint8_t  pin;
+  uint8_t  activeHigh;
+  uint8_t  shortAction;
+  uint8_t  longAction;
+  uint8_t  rememberStyle;
+  uint16_t styleMask;   // v2: widened, the glass faces need bits 7 and 8
+};
+
+// v1 layout, kept so an existing device keeps its pad configuration across the
+// OTA that widened styleMask. Read-only: see loadSettings' migration.
+struct TouchSettingsV1 {
   uint8_t version;
   uint8_t enabled;
   uint8_t pin;
@@ -210,6 +235,31 @@ extern ThemeSettings themeSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
 extern uint8_t clockFace;      // ClockFace value
 extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
+// Chart low pass, 0=Off 1=Light 2=Medium 3=Heavy. Rounds one-sample needles on
+// the glass charts at the cost of shaving real peaks. Its OWN NVS key for the
+// same reason as displayStyle: growing the "disp" blob resizes it and a size
+// mismatch resets every display setting on the next OTA.
+extern uint8_t chartSmoothing;
+constexpr uint8_t CHART_SMOOTH_MAX = 3;
+
+// Glass surface controls, all percentages, all their own NVS keys for the same
+// reason chartSmoothing has one: growing the "disp" blob resizes it and a size
+// mismatch resets every display setting on the next OTA.
+//
+// glassGlossPct  strength of the Aero highlight over the top of a pane.
+// glassBowPct    how far that highlight narrows toward the pane's centre. 0 is
+//                a bar of even brightness across the pane; high values pull it
+//                into a centred oval, which on a short wide tile lands in the
+//                gap between the label and the value and reads as a smudge.
+// glassChartFill opacity of the wash under the chart line.
+// Glass Duo is deliberately untouched by the two highlight controls - that face
+// has no face highlight by design, only lit edges.
+extern uint8_t glassGlossPct;
+extern uint8_t glassBowPct;
+extern uint8_t glassChartFillPct;
+constexpr uint8_t GLASS_GLOSS_PCT_DEFAULT = 31;       // 80/255
+constexpr uint8_t GLASS_BOW_PCT_DEFAULT = 16;         // 40/255
+constexpr uint8_t GLASS_CHART_FILL_PCT_DEFAULT = 59;  // 150/255
 
 void loadSettings();
 void saveSettings();
