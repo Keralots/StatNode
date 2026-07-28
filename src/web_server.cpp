@@ -178,6 +178,7 @@ static void handleApiConfig() {
   display["smoothing"] = dispSettings.gaugeSmoothing;
   display["sparkSeconds"] = sparkRedrawSec;
   display["chartSmooth"] = chartSmoothing;
+  display["glassTheme"] = glassTheme;
   display["glassGloss"] = glassGlossPct;
   display["glassBow"] = glassBowPct;
   display["glassChartFill"] = glassChartFillPct;
@@ -315,6 +316,7 @@ static void handleConfigExport() {
   display["smoothing"] = dispSettings.gaugeSmoothing;
   display["sparkSeconds"] = sparkRedrawSec;
   display["chartSmooth"] = chartSmoothing;
+  display["glassTheme"] = glassTheme;
   display["glassGloss"] = glassGlossPct;
   display["glassBow"] = glassBowPct;
   display["glassChartFill"] = glassChartFillPct;
@@ -508,6 +510,8 @@ static void handleSaveDisplay() {
   sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
   chartSmoothing =
     (uint8_t)clampedArg("chartSmooth", chartSmoothing, 0, CHART_SMOOTH_MAX);
+  glassTheme =
+    (uint8_t)clampedArg("glassTheme", glassTheme, 0, GLASS_THEME_COUNT - 1);
   glassGlossPct = (uint8_t)clampedArg("glassGloss", glassGlossPct, 0, 100);
   glassBowPct = (uint8_t)clampedArg("glassBow", glassBowPct, 0, 100);
   glassChartFillPct =
@@ -834,6 +838,7 @@ static void handleConfigImport() {
   uint8_t nextClockFace = clockFace;
   uint8_t nextSparkRedrawSec = sparkRedrawSec;
   uint8_t nextChartSmoothing = chartSmoothing;
+  uint8_t nextGlassTheme = glassTheme;
   uint8_t nextGlassGlossPct = glassGlossPct;
   uint8_t nextGlassBowPct = glassBowPct;
   uint8_t nextGlassChartFillPct = glassChartFillPct;
@@ -882,6 +887,7 @@ static void handleConfigImport() {
   READ_INT(display, "smoothing", 0, 3, nextDisplay.gaugeSmoothing, uint8_t);
   READ_INT(display, "sparkSeconds", 1, 60, nextSparkRedrawSec, uint8_t);
   READ_INT(display, "chartSmooth", 0, CHART_SMOOTH_MAX, nextChartSmoothing, uint8_t);
+  READ_INT_OPT(display, "glassTheme", 0, GLASS_THEME_COUNT - 1, nextGlassTheme, uint8_t);
   READ_INT_OPT(display, "glassGloss", 0, 100, nextGlassGlossPct, uint8_t);
   READ_INT_OPT(display, "glassBow", 0, 100, nextGlassBowPct, uint8_t);
   READ_INT_OPT(display, "glassChartFill", 0, 100, nextGlassChartFillPct, uint8_t);
@@ -1036,6 +1042,7 @@ static void handleConfigImport() {
   clockFace = nextClockFace;
   sparkRedrawSec = nextSparkRedrawSec;
   chartSmoothing = nextChartSmoothing;
+  glassTheme = nextGlassTheme;
   glassGlossPct = nextGlassGlossPct;
   glassBowPct = nextGlassBowPct;
   glassChartFillPct = nextGlassChartFillPct;

@@ -261,6 +261,20 @@ constexpr uint8_t GLASS_GLOSS_PCT_DEFAULT = 31;       // 80/255
 constexpr uint8_t GLASS_BOW_PCT_DEFAULT = 16;         // 40/255
 constexpr uint8_t GLASS_CHART_FILL_PCT_DEFAULT = 59;  // 150/255
 
+// Glass colourway. Default keeps the ramp derived from the user's bgColor; the
+// two Frosted presets replace both the backdrop ramp and the pane treatment
+// with a fixed palette, so bgColor and the theme text colours stop applying
+// while one is selected. Ported from the Home Assistant Frosted Glass themes
+// (github.com/wessamlauf/homeassistant-frosted-glass-themes, MIT).
+// Its OWN NVS key, same reason as the sliders above.
+enum GlassThemeId : uint8_t {
+  GLASS_THEME_DEFAULT = 0,
+  GLASS_THEME_FROSTED_DARK = 1,
+  GLASS_THEME_FROSTED_LIGHT = 2,
+  GLASS_THEME_COUNT = 3
+};
+extern uint8_t glassTheme;
+
 void loadSettings();
 void saveSettings();
 bool factoryResetSettings();

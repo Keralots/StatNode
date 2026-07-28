@@ -954,16 +954,135 @@ struct GlassSky {
 };
 static GlassSky gSky;
 
-// Derived from the user's bgColor so the Colors card still means something:
-// the ramp is that colour lifted toward a cool slate at the top and sunk
-// toward black at the bottom, never a hardcoded palette.
+// --- colourways --------------------------------------------------------------
+//
+// Ported from the Home Assistant Frosted Glass themes
+// (github.com/wessamlauf/homeassistant-frosted-glass-themes, MIT). What carries
+// over is the PALETTE, not the mechanism. That theme frosts a photographic
+// wallpaper with a real backdrop-filter blur; this panel has no framebuffer to
+// blur, and the gradient-as-backdrop trick only survives because a blurred
+// smooth ramp is still itself. So the ramps below are the theme's own primary
+// scale, which is roughly what its blurred wallpaper averages out to, and the
+// pane numbers are its card tint and inset box-shadows retuned for a 1.75px
+// soft rim instead of a 3px hard bevel.
+static inline Rgb rgb8(int16_t r, int16_t g, int16_t b) {
+  return Rgb{ (int16_t)(r * RGB_ONE), (int16_t)(g * RGB_ONE),
+              (int16_t)(b * RGB_ONE) };
+}
+
+struct GlassTheme {
+  bool    fixed;      // false: derive the ramp from the user's bgColor
+  Rgb     top, mid, bot;
+  int16_t lift;       // overrides GlassStyle.lift
+  uint8_t tint;       // overrides GlassStyle.tint
+  uint8_t bloom;      // overrides GlassStyle.bloom
+  int16_t rimTop, rimSide, rimBot;
+  Rgb     inkBase;    // glassLabelInk mixes this toward the slot accent
+  Rgb     valueInk;
+  Rgb     unitInk;
+};
+
+// Frosted Dark: the theme's primary-30/20/05 as the ramp, a DARK card tint
+// (rgba(28,29,33,0.18) over the backdrop, hence a negative lift) and the bright
+// thin edge its stacked white insets and rgba(234,235,238,0.22) border produce.
+// Deep-frost glass reads by its edges, not by its face.
+// The ramp stops at primary-20 rather than running down to primary-05: the
+// two-segment sky already spends its lower 45% heading for the floor, and with
+// a near-black floor the bottom half of the panel crushed flat and the lowest
+// cards had nothing left to sit on. This theme's wallpaper is a mid navy, not
+// a black one.
+static const GlassTheme GLASS_THEME_DARK_DEF = {
+  /*fixed*/ true,
+  /*top*/ rgb8(0x40, 0x46, 0x7F), /*mid*/ rgb8(0x30, 0x34, 0x5F),
+  /*bot*/ rgb8(0x19, 0x1C, 0x2D),       // token-color-background-base
+  // Accent bleed and bloom are both well under the default face's: a negative
+  // lift makes the pane dark, and the SAME tint that reads as a hint on smoked
+  // glass reads as a solid colour block on a dark one. Frosted glass is neutral
+  // and takes its identity from the label and the meter, not from the body.
+  /*lift*/ -22, /*tint*/ 10, /*bloom*/ 8,
+  /*rimTop*/ 96, /*rimSide*/ 60, /*rimBot*/ 30,
+  /*inkBase*/ rgb8(0xEA, 0xEB, 0xEE),   // token-color-text-primary
+  /*valueInk*/ rgb8(0xF6, 0xF7, 0xFC),
+  /*unitInk*/ rgb8(0xAD, 0xB3, 0xE7)    // primary-70, the theme's soft accent
+};
+
+// Frosted Light: primary-95/90/80. The pane lifts toward white, but what
+// actually separates a pale card from a pale ground is the SHADOW, so the side
+// and bottom rims go negative - that is the theme's
+// box-shadow: 0 12px 20px rgba(0,0,0,0.15). A white rim there would be invisible.
+static const GlassTheme GLASS_THEME_LIGHT_DEF = {
+  /*fixed*/ true,
+  // The ramp sits a step DOWN the scale from where the panes land. A near-white
+  // backdrop under near-white panes is what made the first pass read as one
+  // flat sheet with the cards missing, so the wallpaper takes primary-90..80
+  // and the pane lifts clear of it.
+  /*top*/ rgb8(0xEA, 0xEC, 0xF9), /*mid*/ rgb8(0xD2, 0xD5, 0xF2),
+  /*bot*/ rgb8(0xAD, 0xB3, 0xE7),
+  /*lift*/ 78, /*tint*/ 12, /*bloom*/ 10,
+  /*rimTop*/ 70, /*rimSide*/ -40, /*rimBot*/ -95,
+  /*inkBase*/ rgb8(0x13, 0x15, 0x36),   // token-color-text-primary
+  /*valueInk*/ rgb8(0x13, 0x15, 0x36),
+  /*unitInk*/ rgb8(0x41, 0x43, 0x5F)    // the same at 0.8 over a light ground
+};
+
+static const GlassTheme& glassThemeNow() {
+  switch (glassTheme) {
+    case GLASS_THEME_FROSTED_DARK:  return GLASS_THEME_DARK_DEF;
+    case GLASS_THEME_FROSTED_LIGHT: return GLASS_THEME_LIGHT_DEF;
+    default: break;
+  }
+  static const GlassTheme none = {};   // fixed == false
+  return none;
+}
+
+// True while a pale colourway is active. Everything that brightens a mark to
+// separate it from the pane has to invert here: on a white pane, lifting a
+// colour toward white is how a mark DISAPPEARS.
+static inline bool glassLightMode() {
+  return glassTheme == GLASS_THEME_FROSTED_LIGHT;
+}
+
+// Label ink on glass: mostly the theme's text colour with enough of the slot
+// accent to identify the series, which survives the lifted pane where a dim
+// grey would not.
+static inline uint16_t glassLabelInk(uint16_t accent565) {
+  const GlassTheme& t = glassThemeNow();
+  const Rgb base = t.fixed ? t.inkBase : RGB_WHITE;
+  const Rgb c = rgbMix(base, rgbFrom565(accent565), 88);
+  return rgbTo565(c, 0, 0);
+}
+
+// Reading and unit. A Frosted preset owns these: the theme text colours are
+// authored against the user's own bgColor, and a light colourway with the
+// default near-white value ink would put white digits on a white pane.
+// The warning colour is NOT overridden - a warning has to keep shouting.
+static inline uint16_t glassValueInk(bool warn) {
+  if (warn) return dispSettings.warnColor;
+  const GlassTheme& t = glassThemeNow();
+  return t.fixed ? rgbTo565(t.valueInk, 0, 0) : themeSettings.valueColor;
+}
+
+static inline uint16_t glassUnitInk() {
+  const GlassTheme& t = glassThemeNow();
+  return t.fixed ? rgbTo565(t.unitInk, 0, 0) : themeSettings.secondaryColor;
+}
+
+// Default: derived from the user's bgColor so the Colors card still means
+// something - the ramp is that colour lifted toward a cool slate at the top and
+// sunk toward black at the bottom. A Frosted preset replaces it outright, which
+// is why selecting one makes bgColor stop applying to the glass faces.
 static void glassSkyInit(int16_t h, const Rgb& tint,
                          uint8_t topA, uint8_t midA, uint8_t botA) {
+  gSky.h = h > 1 ? h : 1;
+  const GlassTheme& t = glassThemeNow();
+  if (t.fixed) {
+    gSky.top = t.top; gSky.mid = t.mid; gSky.bot = t.bot;
+    return;
+  }
   const Rgb base = rgbFrom565(dispSettings.bgColor);
   gSky.top = rgbMix(base, tint, topA);
   gSky.mid = rgbMix(base, tint, midA);
   gSky.bot = rgbMix(base, RGB_BLACK, botA);
-  gSky.h = h > 1 ? h : 1;
 }
 
 // Two-segment ramp: the knee at 55% keeps the upper half bright enough for the
@@ -1010,17 +1129,30 @@ static void glassBackdrop(int16_t w, int16_t h) {
 
 // --- pane -------------------------------------------------------------------
 
+// Shade toward white for a positive amount, toward black for a negative one.
+// Every surface term uses this rather than a bare mix toward RGB_WHITE, because
+// a light colourway needs the exact opposite polarity from a dark one: on a
+// pale backdrop a white rim is invisible and it is the SHADOW under the pane
+// that separates the card from its ground.
+static inline Rgb rgbShade(const Rgb& c, int16_t amt) {
+  if (amt >= 0) return rgbMix(c, RGB_WHITE, (uint8_t)(amt > 255 ? 255 : amt));
+  const int16_t a = (int16_t)(-amt);
+  return rgbMix(c, RGB_BLACK, (uint8_t)(a > 255 ? 255 : a));
+}
+
 struct GlassStyle {
-  uint8_t lift;      // pane body pulled toward white (the "smoke")
+  // Signed and 16-bit: the amounts run past 127 (Liquid's top rim is 132) and
+  // a light colourway needs them negative.
+  int16_t lift;      // pane body toward white (the "smoke"), < 0 = smoked dark
   uint8_t tint;      // slot accent bled into the body
   uint8_t bloom;     // accent glow rising off the bottom edge
   uint8_t glossA;    // specular peak alpha, 0 = no gloss at all
   uint8_t glossPct;  // specular band height as a % of pane height
   uint8_t glossBow;  // gloss taken back at the pane's sides, 0 = flat bar
   uint8_t refract;   // rim samples the sky this many rows lower, 0 = off
-  uint8_t rimTop;
-  uint8_t rimSide;
-  int8_t  rimBot;    // > 0 lifts toward white, < 0 sinks toward black
+  int16_t rimTop;    // all three rims: > 0 lifts toward white,
+  int16_t rimSide;   // < 0 sinks toward black
+  int16_t rimBot;
 };
 
 // Vista: polished. A bright specular arc, a hard bevel underneath, warm bloom.
@@ -1037,6 +1169,21 @@ static const GlassStyle GLASS_LIQUID = {
   /*lift*/ 30, /*tint*/ 26, /*bloom*/ 18, /*glossA*/ 0, /*glossPct*/ 0,
   /*glossBow*/ 0, /*refract*/ 6, /*rimTop*/ 132, /*rimSide*/ 72, /*rimBot*/ 54
 };
+
+// Fold the active colourway into a face's surface template. The gloss terms are
+// handled by the caller: they are the face's identity plus the user's two
+// sliders, not something the palette owns.
+static GlassStyle glassThemed(GlassStyle gs) {
+  const GlassTheme& t = glassThemeNow();
+  if (!t.fixed) return gs;
+  gs.lift = t.lift;
+  gs.tint = t.tint;
+  gs.bloom = t.bloom;
+  gs.rimTop = t.rimTop;
+  gs.rimSide = t.rimSide;
+  gs.rimBot = t.rimBot;
+  return gs;
+}
 
 // Portal preview override. It shadows the persisted settings rather than
 // writing them, so a slider drag costs no NVS write and /api/config still
@@ -1064,17 +1211,26 @@ static inline uint8_t glassChartFillNow() {
 // Aero with the user's highlight settings folded in. Both sliders are stored as
 // percentages so the portal can show them as percentages.
 static GlassStyle glassAero() {
-  GlassStyle gs = GLASS_AERO;
+  GlassStyle gs = glassThemed(GLASS_AERO);
   gs.glossA   = (uint8_t)(((uint16_t)glassGlossNow() * 255) / 100);
   gs.glossBow = (uint8_t)(((uint16_t)glassBowNow() * 255) / 100);
+  // A white specular on a pale pane is not a highlight, it is a washed-out
+  // patch, so the light colourway keeps only a third of the slider's strength.
+  if (glassTheme == GLASS_THEME_FROSTED_LIGHT) gs.glossA = (uint8_t)(gs.glossA / 3);
   return gs;
+}
+
+// Liquid takes the colourway but nothing else: its identity is that its edges
+// are lit and its face is not, so it has no gloss for a slider to reach.
+static GlassStyle glassLiquid() {
+  return glassThemed(GLASS_LIQUID);
 }
 
 // Pane body colour for one row. Pure function of the panel row, which is what
 // lets two sprites compose adjacent slices of the same pane and join invisibly.
 static inline Rgb glassPaneRow(int16_t panelY, int16_t dy, int16_t paneH,
                                const Rgb& accent, const GlassStyle& gs) {
-  Rgb c = rgbMix(glassSkyAt(panelY), RGB_WHITE, gs.lift);
+  Rgb c = rgbShade(glassSkyAt(panelY), gs.lift);
   c = rgbMix(c, accent, gs.tint);
   if (gs.bloom && paneH > 1) {
     const int32_t t = ((int32_t)dy * ALPHA_FULL_Q8) / (paneH - 1);
@@ -1132,14 +1288,15 @@ static void glassPaneWindow(const GlassCanvas& c,
 
     // Rim source: Liquid reads the backdrop from further down the panel before
     // lifting it, which is what light bending through a thick edge looks like.
+    // The refracted rim source is lifted a little further than the body in
+    // whichever direction the body itself was shaded, so the sign follows lift.
     const Rgb rimSrc = gs.refract
-      ? rgbMix(glassSkyAt(panelRow + gs.refract), RGB_WHITE, (uint8_t)(gs.lift + 24))
+      ? rgbShade(glassSkyAt(panelRow + gs.refract),
+                 gs.lift >= 0 ? (int16_t)(gs.lift + 24) : (int16_t)(gs.lift - 24))
       : body;
-    Rgb rimTopC  = rgbMix(rimSrc, RGB_WHITE, gs.rimTop);
-    Rgb rimSideC = rgbMix(rimSrc, RGB_WHITE, gs.rimSide);
-    Rgb rimBotC  = gs.rimBot >= 0
-      ? rgbMix(body, RGB_WHITE, (uint8_t)gs.rimBot)
-      : rgbMix(body, RGB_BLACK, (uint8_t)(-gs.rimBot));
+    Rgb rimTopC  = rgbShade(rimSrc, gs.rimTop);
+    Rgb rimSideC = rgbShade(rimSrc, gs.rimSide);
+    Rgb rimBotC  = rgbShade(body, gs.rimBot);
     if (warnRim) {
       rimTopC  = rgbMix(rimTopC,  *warnRim, 200);
       rimSideC = rgbMix(rimSideC, *warnRim, 210);
@@ -1368,7 +1525,10 @@ static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
     rowBase[yy] = glassPaneRow((int16_t)(paneY + paneLocalY + yy),
                                (int16_t)(paneLocalY + yy), paneH, paneAccent, gs);
   }
-  const Rgb lineInk = rgbMix(lineAccent, RGB_WHITE, 40);
+  // Lifted off the accent so the stroke separates from its own area fill. On a
+  // pale pane that lift has to go the other way or the whole plot washes out -
+  // it is what made the Frosted light charts read as blank cards.
+  const Rgb lineInk = rgbShade(lineAccent, glassLightMode() ? -70 : 40);
   // Area fill alpha, Q8, from the portal's Chart fill slider. The floor keeps
   // the shipped 26:150 ratio to the top so one control still fades the wash out
   // toward the bottom of the plot instead of turning it into a flat block.
@@ -1498,7 +1658,8 @@ static void glassChart(const GlassCanvas& c, const SlotHistory& hist,
         const uint8_t al = (d2 <= 1) ? 255 : (d2 <= 2 ? 190 : 90);
         const int16_t qx = cxp + dx, qy = cyp + dy;
         if (qy < oy || qy >= oy + h || qx < ox || qx >= ox + w) continue;
-        const Rgb dot = rgbMix(rowBase[qy - oy], RGB_WHITE, al);
+        const Rgb dot = rgbShade(rowBase[qy - oy],
+                                 glassLightMode() ? -(int16_t)al : (int16_t)al);
         gcPixel(c, qx, qy, rgbTo565(dot, qx, qy));
       }
     }
@@ -1596,7 +1757,7 @@ static void drawNoMetricsHint(int16_t w, int16_t gridH, bool fr) {
   setFont(tft, FONT_BODY);
   // Transparent on glass: the opaque form stamps a flat box through the
   // gradient. The glass faces paint their backdrop before calling this.
-  if (styleUsesGlass(displayStyle)) tft.setTextColor(themeSettings.secondaryColor);
+  if (styleUsesGlass(displayStyle)) tft.setTextColor(glassUnitInk());
   else tft.setTextColor(themeSettings.secondaryColor, dispSettings.bgColor);
   tft.drawString("No metrics bound", w / 2, gridH / 2);
 }
@@ -2655,12 +2816,6 @@ static inline void glassBlit(lgfx::LGFX_Sprite& spr, int16_t x, int16_t y,
   tft.waitDMA();   // shared sprite: barrier before the next window refills it
 }
 
-// Label ink on glass: mostly white with enough of the slot accent to identify
-// the series, which survives the lifted pane where a dim grey would not.
-static inline uint16_t glassLabelInk(uint16_t accent565) {
-  const Rgb c = rgbMix(RGB_WHITE, rgbFrom565(accent565), 88);
-  return rgbTo565(c, 0, 0);
-}
 
 // Subpixel units, so the 8-bit values these were authored as are scaled up.
 static const Rgb GLASS_TINT_AERO   = { 44 * RGB_ONE, 96 * RGB_ONE, 150 * RGB_ONE };
@@ -2695,13 +2850,13 @@ static void glassHeadText(lgfx::LovyanGFX& g, int16_t x, int16_t cy,
   const int16_t unitFh = (int16_t)g.fontHeight();
   const int16_t unitW  = (int16_t)g.textWidth(text.unit);
   g.setTextDatum(MR_DATUM);
-  g.setTextColor(themeSettings.secondaryColor);
+  g.setTextColor(glassUnitInk());
   g.drawString(text.unit, x + w - 9,
                cy + (valueFh - unitFh) / 2 - unitBaselineShift(valueFh, unitFh));
 
   setFont(g, valueFont);
   g.setTextDatum(MR_DATUM);
-  g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
+  g.setTextColor(glassValueInk(warn));
   g.drawString(text.value, x + w - 9 - unitW - 4, cy);
   g.setTextDatum(TL_DATUM);
 }
@@ -2870,6 +3025,7 @@ static void drawGlassDuoScreen(bool fr) {
   if (!layoutCountReady(n)) return;
 
   glassSkyInit(h, GLASS_TINT_LIQUID, 134, 54, 96);
+  const GlassStyle liquid = glassLiquid();
 
   static uint8_t lastN = 0xFF;
   bool relayout = false;
@@ -2972,7 +3128,7 @@ static void drawGlassDuoScreen(bool fr) {
       GlassCanvas c = off ? glassCanvasFor(gGlassA, &gGlassA, 0, 0)
                           : glassCanvasFor(tft, nullptr, margin, y);
       glassPaneWindow(c, 0, 0, halfW, bandH, y, paneW, bandH, radius,
-                      paneAccent, GLASS_LIQUID, warnRim);
+                      paneAccent, liquid, warnRim);
 
       setFont(g, FONT_SMALL);
       g.setTextDatum(TL_DATUM);
@@ -2987,7 +3143,7 @@ static void drawGlassDuoScreen(bool fr) {
       const int16_t valueFh = (int16_t)g.fontHeight();
       const int16_t baseY = valueBaseline(gapY, band, valueFh);
       g.setTextDatum(BL_DATUM);
-      g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
+      g.setTextColor(glassValueInk(warn));
       g.drawString(text.value, gx + 14, baseY);
       const int16_t vw = (int16_t)g.textWidth(text.value);
 
@@ -2997,7 +3153,7 @@ static void drawGlassDuoScreen(bool fr) {
       // an 83px value, which is what left the % and RPM hanging below their
       // numbers.
       setFont(g, bandUnitFont);
-      g.setTextColor(themeSettings.secondaryColor);
+      g.setTextColor(glassUnitInk());
       g.drawString(text.unit, gx + 14 + vw + 5,
                    baseY - unitBaselineShift(valueFh, (int16_t)g.fontHeight()));
       g.setTextDatum(TL_DATUM);
@@ -3013,11 +3169,11 @@ static void drawGlassDuoScreen(bool fr) {
       GlassCanvas c = off ? glassCanvasFor(gGlassA, &gGlassA, -halfW, 0)
                           : glassCanvasFor(tft, nullptr, margin, y);
       glassPaneWindow(c, halfW, 0, paneW - halfW, bandH, y, paneW, bandH,
-                      radius, paneAccent, GLASS_LIQUID, warnRim);
+                      radius, paneAccent, liquid, warnRim);
       glassChart(c, pcHistory[vis[b].slotIdx], vis[b].slotIdx,
                  halfW + 4, 8, paneW - halfW - 16, bandH - 18,
                  paneAccent, lineAccent, y, 8, bandH, 10,
-                 GLASS_LIQUID, advance, scroll);
+                 liquid, advance, scroll);
       if (off) glassBlit(gGlassA, margin + halfW, y, paneW - halfW, bandH);
     }
   }
@@ -3096,7 +3252,7 @@ static void drawGlassDuoScreen(bool fr) {
     GlassCanvas c = poff ? glassCanvasFor(gGlassB, &gGlassB, 0, 0)
                          : glassCanvasFor(tft, nullptr, x, y);
     glassPaneWindow(c, 0, 0, pillW, pillH, y, pillW, pillH, 12,
-                    paneAccent, GLASS_LIQUID, warnRim);
+                    paneAccent, liquid, warnRim);
 
     // Name and reading share one centreline. Stacking them needs ~34px and a
     // pill is often half that, which is what clipped the labels off the
@@ -3117,13 +3273,13 @@ static void drawGlassDuoScreen(bool fr) {
     const int16_t unitFh = (int16_t)g.fontHeight();
     const int16_t unitW = (int16_t)g.textWidth(text.unit);
     g.setTextDatum(MR_DATUM);
-    g.setTextColor(themeSettings.secondaryColor);
+    g.setTextColor(glassUnitInk());
     g.drawString(text.unit, gx + pillW - 11,
                  cy + (valueFh - unitFh) / 2 - unitBaselineShift(valueFh, unitFh));
 
     setFont(g, pillValueFont);
     g.setTextDatum(MR_DATUM);
-    g.setTextColor(warn ? dispSettings.warnColor : themeSettings.valueColor);
+    g.setTextColor(glassValueInk(warn));
     g.drawString(text.value, gx + pillW - 11 - unitW - 4, cy);
     g.setTextDatum(TL_DATUM);
 
@@ -3146,7 +3302,7 @@ static void drawGlassDuoScreen(bool fr) {
         for (int16_t dy = 0; dy < 2; dy++) {
           const int16_t qx = gx + mx + dx, qy = gy + my + dy;
           Rgb base = glassPaneRow(y + my + dy, (int16_t)(my + dy), pillH,
-                                  paneAccent, GLASS_LIQUID);
+                                  paneAccent, liquid);
           base = rgbMix(base, RGB_BLACK, 70);                 // track
           if (cov > 0) base = rgbMix(base, fillC, (uint8_t)cov);
           if (poff) gGlassB.drawPixel(qx, qy, rgbTo565(base, qx, qy));
