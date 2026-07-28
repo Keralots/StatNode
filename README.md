@@ -155,14 +155,14 @@ page). Pick the file matching your board's env from the
    **BOOT**, then release both buttons.
 3. Click **"Connect"** and select your port.
 4. Click **"Choose File"** and select the full image for your board, e.g.
-   `firmware-v1.1.0-esp32c3.bin`. Make sure the env matches your board, or
+   `firmware-v1.2.0-esp32c3.bin`. Make sure the env matches your board, or
    the screen will stay black.
 5. Set **Flash Address** to `0x0`.
 6. Click **"Program"** and wait ~30 seconds.
 7. Done! Continue with [First-run setup](#first-run-setup).
 
 **Manual:**
-`esptool.py --chip esp32c3 --port COM3 --baud 460800 write_flash 0x0 firmware-v1.1.0-esp32c3.bin`
+`esptool.py --chip esp32c3 --port COM3 --baud 460800 write_flash 0x0 firmware-v1.2.0-esp32c3.bin`
 (use `--chip esp32s3` for the four S3 boards).
 
 ## Build & flash

@@ -4,7 +4,7 @@
 // =============================================================================
 //  Firmware version
 // =============================================================================
-#define FW_VERSION          "1.1.0"
+#define FW_VERSION          "1.2.0"
 #define PRODUCT_NAME        "StatNode"
 
 // Board variant - injected into the web UI for OTA asset filtering.
