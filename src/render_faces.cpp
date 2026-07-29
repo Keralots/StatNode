@@ -1181,26 +1181,26 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
     if (pillH < 16) return;
     const bool poff = ensureSprite(gGlassB, gGlassBW, gGlassBH, pillW, pillH);
 
-    // Big panels trade the pill's floor meter for a real chart. At 320x480 a
-    // pill is 80-105px tall against the 40px it gets at 240x240, so the name and
-    // the reading move up into a row of their own and the plot takes the floor -
-    // the same two-part read the bands above already have. The small panels keep
-    // the meter: a 15px plot there is a smudge, not a series.
+    // Pills trade the floor meter for a real chart whenever their measured
+    // height can hold a text row and a readable plot. This is geometry-driven,
+    // not board-driven: a sparse 240x240 Duo can have more room per pill than a
+    // dense layout on the larger panel.
     // Sprite only. Without one the chart would land on the panel through
     // per-pixel drawPixel, which is thousands of windowed SPI writes per pill.
-    const int16_t chartInset = 13;
+    const int16_t chartInsetX = big ? 13 : 8;
+    const int16_t chartBottom = big ? 13 : 5;
+    const int16_t chartMinH = big ? 16 : 14;
     int16_t pillTextH = pillH;
     int16_t pillChartH = 0;
-    if (big && poff) {
-      // Just under half the pill for the text. Less than that and the value
-      // drops a rung or two off the ladder for no visible gain in the plot: at
-      // 105px the reading fits a 48px face on width alone, and it is the row
-      // height that decides which one it actually gets.
-      int16_t th = (int16_t)((pillH * 48) / 100);
+    if (poff) {
+      // Large pills keep the original proportional text row. Compact pills use
+      // one fixed 22px line, which moves the label and reading just high enough
+      // to leave a useful plot below without shrinking their fonts needlessly.
+      int16_t th = big ? (int16_t)((pillH * 48) / 100) : 22;
       if (th < 22) th = 22;
       if (th > 52) th = 52;
-      const int16_t ch = (int16_t)(pillH - th - chartInset);
-      if (ch >= 16) { pillTextH = th; pillChartH = ch; }
+      const int16_t ch = (int16_t)(pillH - th - chartBottom);
+      if (ch >= chartMinH) { pillTextH = th; pillChartH = ch; }
     }
     const bool pillChart = pillChartH > 0;
     // Height the value may grow into. With a chart below, that is the text row
@@ -1286,16 +1286,17 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
         // is full about a minute after boot and this is the steady state.
         const SlotHistory& phist = pcHistory[vis[vi].slotIdx];
         if (phist.count >= PC_HISTORY_LEN) {
-          glassPaneWindow(cb, 0, pillTextH, chartInset, pillChartH,
+          glassPaneWindow(cb, 0, pillTextH, chartInsetX, pillChartH,
                           y, pillW, pillH, 12, paneAccent, sfc.tmpl, warnRim);
-          glassPaneWindow(cb, pillW - chartInset, pillTextH, chartInset, pillChartH,
-                          y, pillW, pillH, 12, paneAccent, sfc.tmpl, warnRim);
+          glassPaneWindow(cb, pillW - chartInsetX, pillTextH,
+                          chartInsetX, pillChartH, y, pillW, pillH, 12,
+                          paneAccent, sfc.tmpl, warnRim);
         } else {
           glassPaneWindow(cb, 0, pillTextH, pillW, pillChartH, y, pillW, pillH, 12,
                           paneAccent, sfc.tmpl, warnRim);
         }
         glassChart(cb, phist, vis[vi].slotIdx,
-                   chartInset, pillTextH, pillW - 2 * chartInset, pillChartH,
+                   chartInsetX, pillTextH, pillW - 2 * chartInsetX, pillChartH,
                    paneAccent, paneAccent, y, pillTextH, pillW, pillH, 8,
                    sfc.tmpl, advance, scroll);
         glassBlit(gGlassB, x, y + pillTextH, pillW, pillChartH);
@@ -1346,7 +1347,7 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
       // the pill still reaches the panel in one push.
       if (pillChart) {
         glassChart(c, pcHistory[vis[vi].slotIdx], vis[vi].slotIdx,
-                   chartInset, pillTextH, pillW - 2 * chartInset, pillChartH,
+                   chartInsetX, pillTextH, pillW - 2 * chartInsetX, pillChartH,
                    paneAccent, paneAccent, y, pillTextH, pillW, pillH, 8,
                    sfc.tmpl, advance, scroll);
       }
