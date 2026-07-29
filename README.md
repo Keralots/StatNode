@@ -48,6 +48,18 @@ on the 320x480 Guition.
 
 <sub>Captured on the 320x480 Guition through `/screen.bmp`, default colorway.</sub>
 
+### Panel sizes
+
+The same face responds to the space available instead of stretching a fixed
+design. These metric views were captured from the actual 240x240 ESP32-S3 and
+320x480 Guition devices while both were receiving the same companion feed.
+
+| Liquid glass Duo, 240x240 | Liquid glass Duo, Guition 320x480 |
+|---|---|
+| ![Liquid glass Duo metrics on a 240x240 ESP32-S3](docs/images/device-240-liquid-duo.png) | ![Liquid glass Duo metrics on a 320x480 Guition](docs/images/device-guition-liquid-duo.png) |
+| **Pulse, 240x240** | **Pulse, Guition 320x480** |
+| ![Pulse metrics on a 240x240 ESP32-S3](docs/images/device-240-pulse.png) | ![Pulse metrics on a 320x480 Guition](docs/images/device-guition-pulse.png) |
+
 ### Surfaces
 
 **Flat** paints in the colors from the portal's Colors page. **Load wash** tints
