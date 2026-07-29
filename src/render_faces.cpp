@@ -127,8 +127,13 @@ static void surfaceBegin(const SurfaceCtx& sfc, int16_t w, int16_t h) {
 // ---------------------------------------------------------------------------
 static uint8_t gWashQ[NUM_GAUGE_SLOTS];
 static uint8_t gWashInit = 0;
+static uint16_t gWashGround[NUM_GAUGE_SLOTS];
+static uint8_t gWashGroundInit = 0;
 
-void resetWashState() { gWashInit = 0; }
+void resetWashState() {
+  gWashInit = 0;
+  gWashGroundInit = 0;
+}
 
 // Capture computes the step it would use and commits nothing: a screenshot
 // must not advance the live hysteresis.
@@ -149,6 +154,19 @@ static uint8_t washStep(uint8_t slotIdx, float frac) {
 static uint16_t washGround(uint8_t q, uint16_t accent, bool warn, uint16_t bg) {
   const uint8_t alpha = warn ? (uint8_t)(77 + q * 14) : (uint8_t)(26 + q * 13);
   return blend565(alpha, warn ? dispSettings.warnColor : accent, bg);
+}
+
+// A changing reading does not necessarily change the quantized wash color.
+// Keep the actual rendered ground per gauge slot so the Duo layout can update
+// its text without clearing the complete band or cell at packet rate.
+static bool washGroundChanged(uint8_t slotIdx, uint16_t ground) {
+  const uint8_t bit = (uint8_t)(1u << slotIdx);
+  const bool changed = !(gWashGroundInit & bit) || gWashGround[slotIdx] != ground;
+  if (!gCaptureRender) {
+    gWashGround[slotIdx] = ground;
+    gWashGroundInit |= bit;
+  }
+  return changed;
 }
 
 // The face the renderer is currently drawing: the live tuple, snapped to a
@@ -1437,6 +1455,7 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
     const uint8_t q = wash ? washStep(vis[b].slotIdx,
                                       slotFraction(m.value, scale)) : 0;
     const uint16_t ground = wash ? washGround(q, s.arcColor, warn, bg) : bg;
+    const bool groundChanged = wash && washGroundChanged(vis[b].slotIdx, ground);
     const uint16_t valueInk = wash ? autoContrast565(ground)
                                    : (warn ? dispSettings.warnColor
                                            : themeSettings.valueColor);
@@ -1454,7 +1473,7 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
     if (gaugeTextChanged(3, y + bandH, key, label, fr)) {
       // The whole band wears one tint, chart half included. With a single
       // metric the chart drops below the band, so the tint follows it down.
-      if (wash)
+      if (wash && (gScreenCleared || relayout || groundChanged))
         tft.fillRect(0, y, w, (n == 1) ? (int16_t)(gridH - y) : bandH, ground);
       setFont(tft, FONT_SMALL);
       tft.setTextDatum(TL_DATUM);
@@ -1564,6 +1583,7 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
       const int16_t cy = rowY + rowH / 2;
       const uint8_t q = wash ? washStep(vis[vi].slotIdx, frac) : 0;
       const uint16_t ground = wash ? washGround(q, s.arcColor, warn, bg) : bg;
+      const bool groundChanged = wash && washGroundChanged(vis[vi].slotIdx, ground);
       const uint16_t valueInk = wash ? autoContrast565(ground)
                                      : (warn ? dispSettings.warnColor
                                              : themeSettings.valueColor);
@@ -1575,7 +1595,8 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
                rowRung, q);
       if (!gaugeTextChanged(w / 2, cy, rkey, label, fr)) continue;
 
-      if (wash) tft.fillRect(0, rowY, w, rowH, ground);
+      if (wash && (gScreenCleared || relayout || groundChanged))
+        tft.fillRect(0, rowY, w, rowH, ground);
       fitFontForWidth(label, bx - 16, rowLabelFont);
       tft.setTextDatum(ML_DATUM);
       tft.setTextColor(wash ? blend565(200, valueInk, ground)
@@ -1630,6 +1651,7 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
     const int16_t cy = y + (cellH - 10) / 2;
     const uint8_t q = wash ? washStep(vis[vi].slotIdx, frac) : 0;
     const uint16_t ground = wash ? washGround(q, s.arcColor, warn, bg) : bg;
+    const bool groundChanged = wash && washGroundChanged(vis[vi].slotIdx, ground);
     const uint16_t valueInk = wash ? autoContrast565(ground)
                                    : (warn ? dispSettings.warnColor
                                            : themeSettings.valueColor);
@@ -1641,7 +1663,8 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
              gridRung, q);
     if (!gaugeTextChanged(x + cellW / 2, cy, key, label, fr)) continue;
 
-    if (wash) tft.fillRect(x, y, cellW, cellH, ground);
+    if (wash && (gScreenCleared || relayout || groundChanged))
+      tft.fillRect(x, y, cellW, cellH, ground);
     // Same reasoning as the list rows: a 160px-wide cell on the large canvas
     // dwarfed the SMALL label / BODY value ceiling. Unit is in the string, so
     // full-charset faces only.
