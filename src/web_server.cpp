@@ -122,22 +122,32 @@ static long clampedArg(const char* name, long current, long minValue, long maxVa
   return value;
 }
 
-static uint8_t displayStyleArg(const char* name, uint8_t current) {
-  // A BLANK or non-numeric "style" field parses to 0 (STYLE_RETIRED), and
-  // normalizeDisplayStyle turns 0 into STYLE_DEFAULT - so one empty select
-  // silently threw the face back to Tiles, which is exactly the "style keeps
-  // resetting to 2" report. THREE forms carry name="style" (Display, Layout,
-  // Colors), so any of them submitted before its select was populated did it.
-  // Absent, blank or out of range now means KEEP WHAT IS SET; only a real style
-  // value changes it. STYLE_RETIRED stays accepted from NVS (loadSettings
-  // migrates it) but is no longer something a form can ask for.
-  if (!server.hasArg(name)) return normalizeDisplayStyle(current);
-  const String raw = server.arg(name);
-  if (raw.length() == 0) return normalizeDisplayStyle(current);
-  const long requested = raw.toInt();
-  if (requested < STYLE_BIG_NUMBERS || requested > (long)STYLE_COUNT - 1)
-    return normalizeDisplayStyle(current);
-  return normalizeDisplayStyle((uint8_t)requested);
+// Read the whole face tuple from one request as a UNIT. Two independently
+// validated axes would make order matter: checking a requested layout against
+// the surface still in the globals rejects a legal move like Tiles+Aero to Big
+// numbers, whose only legal surface is Flat. Read every raw value first, then
+// normalise the requested pair together.
+//
+// A blank or out-of-range field means KEEP WHAT IS SET, which is what clampedArg
+// already does. That rule exists because an empty select used to parse as 0 and
+// silently threw the face back to the default - the old "style keeps resetting
+// to Tiles" report.
+static void faceArgs(uint8_t& layout, uint8_t& surface, uint8_t& bands,
+                     uint8_t& rowStyle) {
+  layout   = (uint8_t)clampedArg("layout", displayLayout, 0, LAYOUT_COUNT - 1);
+  surface  = (uint8_t)clampedArg("surface", displaySurface, 0, SURFACE_COUNT - 1);
+  bands    = (uint8_t)clampedArg("duoBands", duoHeroBands, 1, DUO_BANDS_MAX);
+  rowStyle = (uint8_t)clampedArg("duoRows", duoRowStyle, 0, DUO_ROWS_LIST);
+  normalizeFace(layout, surface, bands, rowStyle);
+}
+
+static void applyFaceArgs() {
+  uint8_t layout, surface, bands, rowStyle;
+  faceArgs(layout, surface, bands, rowStyle);
+  displayLayout = layout;
+  displaySurface = surface;
+  duoHeroBands = bands;
+  duoRowStyle = rowStyle;
 }
 
 static void addHtmlColor(JsonObject object, const char* key, uint16_t color) {
@@ -172,6 +182,13 @@ static void handleApiConfig() {
 #endif
 
   JsonObject display = doc["display"].to<JsonObject>();
+  // The tuple is what the portal edits. "style" stays as the derived legacy
+  // value so older tooling keeps reading something meaningful.
+  display["layout"] = displayLayout;
+  display["surface"] = displaySurface;
+  display["duoBands"] = duoHeroBands;
+  display["duoRows"] = duoRowStyle;
+  display["faceName"] = faceNameFor(displayLayout, displaySurface, duoRowStyle);
   display["style"] = displayStyle;
   display["rotation"] = dispSettings.rotation;
   display["brightness"] = brightness;
@@ -199,6 +216,19 @@ static void handleApiConfig() {
   backlight["nightEnd"] = timeBuf;
   backlight["offlineSleepMinutes"] = backlightSettings.offlineSleepMinutes;
   backlight["nightOfflineOff"] = backlightSettings.nightOfflineOff != 0;
+
+  // The face table, so the portal can name every face and disable the surfaces
+  // a layout does not carry, without hardcoding the product of the two axes.
+  JsonArray faces = doc["faces"].to<JsonArray>();
+  for (uint8_t i = 0; i < FACE_COUNT; i++) {
+    const FaceFamily& f = faceSpec(i);
+    JsonObject entry = faces.add<JsonObject>();
+    entry["layout"] = f.layout;
+    entry["surface"] = f.surface;
+    entry["bands"] = f.bands;
+    entry["rows"] = f.rowStyle;
+    entry["name"] = f.name;
+  }
 
   JsonObject touch = doc["touch"].to<JsonObject>();
   touch["supported"] = touchInputSupported();
@@ -297,7 +327,10 @@ static const char* CONFIG_BACKUP_FORMAT = "statnode-config";
 // Backups exported by pre-rename (PCMonitorColor) firmware remain importable.
 static const char* CONFIG_BACKUP_FORMAT_LEGACY = "pcmonitorcolor-config";
 static const char* CONFIG_BACKUP_PRODUCT_LEGACY = "PCMonitorColor";
-static const uint8_t CONFIG_BACKUP_SCHEMA = 1;
+// Schema 2 added the face tuple to display and changed touch.styleMask from
+// DisplayStyle bits to face-index bits. Schema 1 backups still import: their
+// legacy style seeds the tuple and their mask is remapped.
+static const uint8_t CONFIG_BACKUP_SCHEMA = 2;
 static const size_t CONFIG_IMPORT_MAX_BYTES = 16 * 1024;
 
 static void handleConfigExport() {
@@ -310,6 +343,12 @@ static void handleConfigExport() {
   doc["wifiCredentialsIncluded"] = false;
 
   JsonObject display = doc["display"].to<JsonObject>();
+  // Schema 2 carries the face tuple; "style" remains the derived legacy value
+  // so a schema 2 backup still restores onto firmware that only knows styles.
+  display["layout"] = displayLayout;
+  display["surface"] = displaySurface;
+  display["duoBands"] = duoHeroBands;
+  display["duoRows"] = duoRowStyle;
   display["style"] = displayStyle;
   display["rotation"] = dispSettings.rotation;
   display["brightness"] = brightness;
@@ -417,9 +456,9 @@ static void handleSaveHardware() {
       (uint8_t)clampedArg("touchLong", next.longAction, 0, TOUCH_ACTION_COUNT - 1);
     next.rememberStyle = server.hasArg("touchRemember") ? 1 : 0;
     next.styleMask = 0;
-    for (uint8_t i = STYLE_BIG_NUMBERS; i < STYLE_COUNT; i++) {
+    for (uint8_t i = 0; i < FACE_COUNT; i++) {
       char key[16];
-      snprintf(key, sizeof(key), "touchStyle%u", i);
+      snprintf(key, sizeof(key), "touchFace%u", i);
       if (server.hasArg(key)) next.styleMask |= 1u << i;
     }
     if (!touchPinAllowed(next.pin)) {
@@ -503,7 +542,7 @@ static void handleGlassPreview() {
 static void handleSaveDisplay() {
   bool panelChanged = false;
 
-  displayStyle = displayStyleArg("style", displayStyle);
+  applyFaceArgs();
   dispSettings.rotation = (uint8_t)clampedArg("rotation", dispSettings.rotation, 0, 3);
   brightness = (uint8_t)clampedArg("brightness", brightness, 0, 255);
   dispSettings.gaugeSmoothing = (uint8_t)clampedArg("smoothing", dispSettings.gaugeSmoothing, 0, 3);
@@ -553,10 +592,14 @@ static void handleSaveDisplay() {
 }
 
 static void handleSaveGauges() {
-  // Keep style and chart cadence accepted here for backwards compatibility
-  // with existing scripts that posted them to /save/gauges.
-  if (server.hasArg("style"))
-    displayStyle = displayStyleArg("style", displayStyle);
+  // The face selector lives on the Display page now. A legacy "style" field is
+  // still accepted here, mapped through the face table, so existing scripts and
+  // bookmarks that switched the face this way keep working.
+  if (server.hasArg("style")) {
+    const long raw = server.arg("style").toInt();
+    if (raw >= STYLE_BIG_NUMBERS && raw < STYLE_COUNT)
+      applyFace(faceIndexFromLegacyStyle((uint8_t)raw));
+  }
   if (server.hasArg("sparks"))
     sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
 
@@ -637,8 +680,6 @@ static const ColorPreset kPresets[] = {
 };
 
 static void handleSaveColors() {
-  if (server.hasArg("style"))
-    displayStyle = displayStyleArg("style", displayStyle);
   const String pre = server.arg("preset");
   const ColorPreset* preset = nullptr;
   for (const ColorPreset& cp : kPresets) {
@@ -804,11 +845,14 @@ static void handleConfigImport() {
     return;
   }
   long integer = 0;
-  if (!readBackupInteger(root, "schema", CONFIG_BACKUP_SCHEMA,
-                         CONFIG_BACKUP_SCHEMA, integer, error, "schema")) {
+  if (!readBackupInteger(root, "schema", 1, CONFIG_BACKUP_SCHEMA,
+                         integer, error, "schema")) {
     sendJsonMessage(400, false, "This backup schema is not supported by this firmware.");
     return;
   }
+  // Schema 1 predates the Layout x Surface split: it carries no face tuple and
+  // its touch mask is in DisplayStyle bits.
+  const bool legacyFaceSchema = integer < 2;
 
   JsonObjectConst display = root["display"].as<JsonObjectConst>();
   JsonObjectConst backlight = root["backlight"].as<JsonObjectConst>();
@@ -835,6 +879,10 @@ static void handleConfigImport() {
   TouchSettings nextTouch = touchSettings;
   ThemeSettings nextTheme = themeSettings;
   uint8_t nextDisplayStyle = displayStyle;
+  uint8_t nextLayout = displayLayout;
+  uint8_t nextSurface = displaySurface;
+  uint8_t nextDuoBands = duoHeroBands;
+  uint8_t nextDuoRows = duoRowStyle;
   uint8_t nextClockFace = clockFace;
   uint8_t nextSparkRedrawSec = sparkRedrawSec;
   uint8_t nextChartSmoothing = chartSmoothing;
@@ -882,6 +930,22 @@ static void handleConfigImport() {
 
   READ_INT(display, "style", 0, STYLE_COUNT - 1, nextDisplayStyle, uint8_t);
   nextDisplayStyle = normalizeDisplayStyle(nextDisplayStyle);
+  // The legacy value seeds the tuple, so a schema 1 backup restores the face it
+  // was taken on. Schema 2 then overwrites the seed with what it actually
+  // stored, which is how the four combinations with no legacy value survive a
+  // backup round trip.
+  {
+    const FaceFamily& seed = faceSpec(faceIndexFromLegacyStyle(nextDisplayStyle));
+    nextLayout = seed.layout;
+    nextSurface = seed.surface;
+    nextDuoBands = seed.bands;
+    nextDuoRows = seed.rowStyle;
+  }
+  READ_INT_OPT(display, "layout", 0, LAYOUT_COUNT - 1, nextLayout, uint8_t);
+  READ_INT_OPT(display, "surface", 0, SURFACE_COUNT - 1, nextSurface, uint8_t);
+  READ_INT_OPT(display, "duoBands", 1, DUO_BANDS_MAX, nextDuoBands, uint8_t);
+  READ_INT_OPT(display, "duoRows", 0, DUO_ROWS_LIST, nextDuoRows, uint8_t);
+  normalizeFace(nextLayout, nextSurface, nextDuoBands, nextDuoRows);
   READ_INT(display, "rotation", 0, 3, nextDisplay.rotation, uint8_t);
   READ_INT(display, "brightness", 0, 255, nextBrightness, uint8_t);
   READ_INT(display, "smoothing", 0, 3, nextDisplay.gaugeSmoothing, uint8_t);
@@ -919,11 +983,13 @@ static void handleConfigImport() {
            nextTouch.shortAction, uint8_t);
   READ_INT(touch, "longAction", 0, TOUCH_ACTION_COUNT - 1,
            nextTouch.longAction, uint8_t);
-  READ_INT(touch, "styleMask", 1, (1u << STYLE_COUNT) - 1u,
+  READ_INT(touch, "styleMask", 1, (1u << FACE_COUNT) - 1u,
            nextTouch.styleMask, uint16_t);
-  nextTouch.styleMask &= STYLE_ACTIVE_MASK;
+  if (legacyFaceSchema)
+    nextTouch.styleMask = faceMaskFromStyleMask(nextTouch.styleMask);
+  nextTouch.styleMask &= FACE_ACTIVE_MASK;
   if (nextTouch.styleMask == 0)
-    nextTouch.styleMask = 1u << STYLE_DEFAULT;
+    nextTouch.styleMask = 1u << FACE_DEFAULT;
   READ_BOOL(touch, "rememberStyle", nextTouch.rememberStyle);
   if (nextTouch.enabled && (!touchInputSupported() || !touchPinAllowed(nextTouch.pin))) {
     sendJsonMessage(400, false,
@@ -1038,7 +1104,10 @@ static void handleConfigImport() {
   backlightSettings = nextBacklight;
   touchSettings = nextTouch;
   themeSettings = nextTheme;
-  displayStyle = nextDisplayStyle;
+  displayLayout = nextLayout;
+  displaySurface = nextSurface;
+  duoHeroBands = nextDuoBands;
+  duoRowStyle = nextDuoRows;
   clockFace = nextClockFace;
   sparkRedrawSec = nextSparkRedrawSec;
   chartSmoothing = nextChartSmoothing;
@@ -1150,7 +1219,10 @@ static void handleApiStatus() {
   doc["ip"]      = WiFi.localIP().toString();
   doc["pc_online"] = pcData.online;
   doc["pc_status"] = pcData.status;
+  // "style" is the derived legacy int, kept because the companion and older
+  // tooling read it. face_name is the one that can name all twelve faces.
   doc["style"]     = displayStyle;
+  doc["face_name"] = faceNameFor(displayLayout, displaySurface, duoRowStyle);
   switch (clockFace) {
     case CLOCK_FACE_BREAKOUT: doc["clock_face"] = "breakout"; break;
     case CLOCK_FACE_RUNNER:   doc["clock_face"] = "runner"; break;

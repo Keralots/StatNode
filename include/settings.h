@@ -97,6 +97,106 @@ inline uint8_t normalizeDisplayStyle(uint8_t style) {
     ? style : STYLE_DEFAULT;
 }
 
+// ---------------------------------------------------------------------------
+//  Monitor face: Layout x Surface
+// ---------------------------------------------------------------------------
+// The flat DisplayStyle list above is being replaced by two orthogonal
+// settings. Layout says how the bound slots are arranged; Surface says how that
+// arrangement is painted. Several of the legacy styles are the same layout
+// wearing a different coat (Tiles/Aero glass tiles, Duo/Liquid glass duo), so
+// the product of the two axes covers all of them plus four combinations that
+// never existed.
+//
+// `displayStyle` stays the value the renderer, the portal and the touch cycler
+// speak until the axes take over; until then the tuple below is a derived
+// mirror of it, and the legacy key remains what NVS, /api/status, the config
+// backup and older firmware read.
+enum LayoutId : uint8_t {
+  LAYOUT_BIG_NUMBERS = 0,  // large values + hairline meter, no chrome
+  LAYOUT_TILES       = 1,  // grid of cards
+  LAYOUT_STRIPS      = 2,  // full-width lane per metric
+  LAYOUT_DUO         = 3,  // hero bands over a remainder grid or list
+  LAYOUT_COUNT
+};
+
+enum SurfaceId : uint8_t {
+  SURFACE_FLAT   = 0,  // flat fills in the configured theme colors
+  SURFACE_AERO   = 1,  // gradient backdrop, glossed panes
+  SURFACE_LIQUID = 2,  // gradient backdrop, edge-lit capsules
+  SURFACE_WASH   = 3,  // flat fills tinted by each slot's load
+  SURFACE_COUNT
+};
+
+// Duo remainder treatment. Grid packs the leftover metrics into cells; List
+// gives each one a full-width row with a meter, which is what the old
+// Hero + list face did.
+enum DuoRowStyle : uint8_t {
+  DUO_ROWS_GRID = 0,
+  DUO_ROWS_LIST = 1
+};
+
+constexpr uint8_t DUO_BANDS_MAX = 2;
+
+// A face family is the unit the face table, the portal selector and touch
+// cycling operate on. Its key is (layout, surface), except Duo+Flat which
+// splits on rowStyle so Hero + list and Duo stay distinct entries.
+//
+// Bands are deliberately NOT part of the key. That keeps faceIndex() total:
+// every legal tuple resolves to exactly one family, so a user setting one band
+// on a glass Duo can never produce a face with no index, no name and no
+// cycling anchor.
+struct FaceFamily {
+  uint8_t layout;       // LayoutId
+  uint8_t surface;      // SurfaceId
+  uint8_t bands;        // seeded duoHeroBands, 1..DUO_BANDS_MAX
+  uint8_t rowStyle;     // seeded duoRowStyle; part of the key for Duo+Flat
+  uint8_t legacyStyle;  // DisplayStyle written to the "style" NVS key
+  const char* name;
+};
+
+constexpr uint8_t FACE_COUNT = 12;
+constexpr uint8_t FACE_DEFAULT = 1;  // Tiles + Flat, matches STYLE_DEFAULT
+
+// Bumped whenever the meaning of the face NVS keys changes. Doubles as the
+// commit marker for the multi-key face record - see writeFaceRecord().
+constexpr uint8_t FACE_SCHEMA_VERSION = 1;
+
+// True for the surfaces that paint a gradient backdrop instead of a flat fill.
+// Anything that would otherwise clear a region to dispSettings.bgColor has to
+// branch on this - a flat clear punches a visible hole through the gradient.
+inline bool surfaceUsesGlass(uint8_t surface) {
+  return surface == SURFACE_AERO || surface == SURFACE_LIQUID;
+}
+
+// Every face is cyclable out of the box. Twelve bits still fit the 16-bit
+// styleMask field the touch blob already carries.
+constexpr uint16_t FACE_ACTIVE_MASK = (uint16_t)((1u << FACE_COUNT) - 1u);
+
+const FaceFamily& faceSpec(uint8_t faceIdx);
+bool faceIsLegal(uint8_t layout, uint8_t surface);
+// Total over legal tuples: returns FACE_DEFAULT for an illegal pair rather
+// than an out-of-range index.
+uint8_t faceIndex(uint8_t layout, uint8_t surface, uint8_t rowStyle);
+uint8_t faceIndexFromLegacyStyle(uint8_t style);
+uint8_t legacyStyleFor(uint8_t layout, uint8_t surface, uint8_t rowStyle);
+const char* faceNameFor(uint8_t layout, uint8_t surface, uint8_t rowStyle);
+// Seeds all four face globals plus the legacy displayStyle from a family.
+void applyFace(uint8_t faceIdx);
+// Re-derives the tuple from displayStyle. Used by the NVS migration path, where
+// the legacy value is all there is.
+void syncFaceFromDisplayStyle();
+// Snaps a requested tuple into a legal one: clamps each axis, drops an illegal
+// (layout, surface) pair back to Flat and clamps the Duo-only fields.
+void normalizeFace(uint8_t& layout, uint8_t& surface, uint8_t& bands,
+                   uint8_t& rowStyle);
+// The tuple is the truth; the legacy "style" scalar is derived from it for NVS,
+// /api/status, config backups and older firmware.
+void syncDisplayStyleFromFace();
+uint8_t currentFaceIndex();
+// Remaps a legacy style mask (bit per DisplayStyle) onto face bits. Used by the
+// TouchSettings v3 migration and by schema 1 config imports.
+uint16_t faceMaskFromStyleMask(uint16_t styleMask);
+
 // Idle clock face. Stored as its own NVS scalar ("clockface") so extending
 // the list cannot resize the legacy DisplaySettings blob and reset unrelated
 // display configuration after an OTA update.
@@ -233,6 +333,13 @@ extern TouchSettings touchSettings;
 extern LedSettings ledSettings;
 extern ThemeSettings themeSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
+// The face tuple. Each of the four is its own NVS scalar, never a blob field,
+// for the same reason displayStyle is one: growing "disp" resizes it and a size
+// mismatch resets every display setting on the next OTA.
+extern uint8_t displayLayout;  // LayoutId
+extern uint8_t displaySurface; // SurfaceId
+extern uint8_t duoHeroBands;   // 1..DUO_BANDS_MAX, Duo layout only
+extern uint8_t duoRowStyle;    // DuoRowStyle, Duo layout only
 extern uint8_t clockFace;      // ClockFace value
 extern uint8_t sparkRedrawSec; // chart repaint cadence in seconds (own NVS key)
 // Chart low pass, 0=Off 1=Light 2=Medium 3=Heavy. Rounds one-sample needles on
@@ -287,7 +394,9 @@ void defaultTouchSettings(TouchSettings& ts);
 void defaultLedSettings(LedSettings& ls);
 void saveLedSettings();
 void defaultThemeSettings(ThemeSettings& ts);
-void saveDisplayStyle();
+// Writes the face record (tuple + derived legacy style) on its own, without
+// rewriting every other NVS key. The touch cycler is its only caller.
+void saveDisplayFace();
 
 // Keep custom labels ASCII-only because the bundled display fonts do not
 // provide general UTF-8 glyph coverage. Leading/trailing spaces are removed.

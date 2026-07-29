@@ -13,35 +13,59 @@ StatNode is the color evolution of my
 
 ## Monitor faces
 
-Eight layouts, all driven by the same eight ordered metric slots (slot 1 =
-hero). Switch face live from the web portal. How many readings appear is simply
-how many slots you bind, and every face lays itself out from that count, so
-there is no separate "tile count" setting to disagree with your bindings.
+A face is two settings, not one: a **layout** says how the bound metrics are
+arranged, a **surface** says how that arrangement is painted. Four layouts by
+four surfaces gives twelve faces, all driven by the same eight ordered metric
+slots (slot 1 = hero). Switch face live from the web portal.
+
+|  | Flat | Aero glass | Liquid glass | Load wash |
+|---|---|---|---|---|
+| **Big numbers** | Big numbers | - | - | - |
+| **Tiles** | Tiles | Aero glass tiles | Liquid glass tiles | Pulse |
+| **Strips** | Strips | - | - | Washed strips |
+| **Duo** | Duo, Hero + list | Aero glass duo | Liquid glass duo | Washed duo |
+
+How many readings appear is simply how many slots you bind, and every face lays
+itself out from that count, so there is no separate "tile count" setting to
+disagree with your bindings. The Duo layout adds two options of its own: how
+many hero bands it opens with (one or two), and whether the remaining metrics
+fill a grid or full-width list rows. One band plus list rows is the face
+previously called Hero + list.
 
 Values are rendered from native font faces sized to the space they have, never
 magnified, so the big readings stay crisp on the small square panels as well as
 on the 320x480 Guition.
 
-| Big numbers | Tiles + sparklines | Hero + list |
+| Big numbers | Tiles | Aero glass tiles |
 |---|---|---|
-| ![Big numbers](docs/images/face-bignumbers.png) | ![Tiles](docs/images/face-tiles.png) | ![Hero](docs/images/face-hero.png) |
-| **Strips** | **Duo** | **Pulse** |
-| ![Strips](docs/images/face-strips.png) | ![Duo](docs/images/face-duo.png) | ![Pulse](docs/images/face-pulse.png) |
+| ![Big numbers](docs/images/face-bignumbers.png) | ![Tiles](docs/images/face-tiles.png) | ![Aero glass tiles](docs/images/face-tiles-aero.png) |
+| **Liquid glass tiles** | **Pulse** | **Strips** |
+| ![Liquid glass tiles](docs/images/face-tiles-liquid.png) | ![Pulse](docs/images/face-pulse.png) | ![Strips](docs/images/face-strips.png) |
+| **Washed strips** | **Hero + list** | **Duo** |
+| ![Washed strips](docs/images/face-strips-wash.png) | ![Hero and list](docs/images/face-hero.png) | ![Duo](docs/images/face-duo.png) |
+| **Aero glass duo** | **Liquid glass duo** | **Washed duo** |
+| ![Aero glass duo](docs/images/face-duo-aero.png) | ![Liquid glass duo](docs/images/face-duo-liquid.png) | ![Washed duo](docs/images/face-duo-wash.png) |
 
-<sub>Captures are pulled from the device via `/screen.bmp`; the greenish cast is
-RGB332 quantization in the capture only; the real panel blacks are true black.</sub>
+<sub>Captured on the 320x480 Guition through `/screen.bmp`, default colorway.</sub>
 
-### Glass faces
+### Surfaces
 
-Two more faces render every card as a pane of glass over a generated backdrop:
-**Aero glass tiles** (a grid of panes, each with its own chart) and **Liquid
-glass duo** (two hero panes over a grid of pills). The backdrop is a smooth
-vertical gradient, composed well above the panel's color depth and dithered on
-the way down to it, so the panes stay banding-free.
+**Flat** paints in the colors from the portal's Colors page. **Load wash** tints
+each slot's ground by its own reading, quantized into eight steps with
+hysteresis so a value sitting on a boundary does not flicker between them; it is
+built for reading the machine's state from across the room rather than reading
+digits.
+
+The two **glass** surfaces render every card as a pane over a generated
+backdrop: Aero glosses the face of each pane, Liquid leaves the face clear and
+lights the edges. The backdrop is a smooth vertical gradient, composed well
+above the panel's color depth and dithered on the way down to it, so the panes
+stay banding-free.
 
 Both take a **colorway**, set on the portal's Display page: *Default*, which
 follows your background color as smoked glass, and two frosted presets. Gloss,
 bow and chart fill are sliders on the same card and apply live as you drag them.
+The colorway applies to whichever layout is wearing the glass.
 
 | Default | Frosted glass dark | Frosted glass light |
 |---|---|---|
@@ -63,9 +87,9 @@ When the PC goes offline the screen shows an idle clock: **Standard**,
 Browse to the device IP or `http://statnode.local`. Everything is applied live
 without a reboot (except network changes).
 
-| Overview | Metrics & layout | Colors |
+| Overview | Display | Metrics & layout |
 |---|---|---|
-| ![Overview](docs/images/web-overview.png) | ![Metrics](docs/images/web-metrics.png) | ![Colors](docs/images/web-colors.png) |
+| ![Overview](docs/images/web-overview.png) | ![Display](docs/images/web-display.png) | ![Metrics](docs/images/web-metrics.png) |
 
 Pages: **Overview** (live preview + health), **Display** (face, brightness,
 night schedule), **Metrics & layout** (drag metrics into slots), **Colors**
