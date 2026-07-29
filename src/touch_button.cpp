@@ -64,17 +64,21 @@ static void recordAction(const char* action) {
   Serial.printf("Touch: %s\n", action);
 }
 
+// Cycles through face FAMILIES, so the mask bits are face indices. Selecting a
+// family re-seeds the Duo band count and row style from the table; a customised
+// value for either lives only as long as the user stays on that family.
 static void cycleStyle(int8_t direction) {
-  uint16_t mask = touchSettings.styleMask & STYLE_ACTIVE_MASK;
-  if (mask == 0) mask = 1u << STYLE_DEFAULT;
+  uint16_t mask = touchSettings.styleMask & FACE_ACTIVE_MASK;
+  if (mask == 0) mask = 1u << FACE_DEFAULT;
 
-  for (uint8_t step = 1; step <= STYLE_COUNT; step++) {
-    int candidate = (int)displayStyle + direction * step;
-    while (candidate < 0) candidate += STYLE_COUNT;
-    candidate %= STYLE_COUNT;
+  const uint8_t current = currentFaceIndex();
+  for (uint8_t step = 1; step <= FACE_COUNT; step++) {
+    int candidate = (int)current + direction * step;
+    while (candidate < 0) candidate += FACE_COUNT;
+    candidate %= FACE_COUNT;
     if (mask & (1u << candidate)) {
-      displayStyle = (uint8_t)candidate;
-      if (touchSettings.rememberStyle) saveDisplayStyle();
+      applyFace((uint8_t)candidate);
+      if (touchSettings.rememberStyle) saveDisplayFace();
       ScreenState screen = getScreenState();
       if (screen == SCREEN_CLOCK) setScreenState(SCREEN_MONITOR);
       else forceDisplayRedraw();
