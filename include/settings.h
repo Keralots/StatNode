@@ -182,6 +182,10 @@ uint8_t legacyStyleFor(uint8_t layout, uint8_t surface, uint8_t rowStyle);
 const char* faceNameFor(uint8_t layout, uint8_t surface, uint8_t rowStyle);
 // Seeds all four face globals plus the legacy displayStyle from a family.
 void applyFace(uint8_t faceIdx);
+// applyFace() without the band re-seed. Bands are not part of the face key, so
+// they are a user preference no face switch should silently overwrite - see the
+// definition for why touch cycling is the caller that needs this.
+void applyFaceKeepBands(uint8_t faceIdx);
 // Re-derives the tuple from displayStyle. Used by the NVS migration path, where
 // the legacy value is all there is.
 void syncFaceFromDisplayStyle();

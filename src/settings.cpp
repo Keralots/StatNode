@@ -128,6 +128,24 @@ void applyFace(uint8_t faceIdx) {
   displayStyle   = f.legacyStyle;
 }
 
+// Bands are documented above as deliberately NOT part of the face key, which
+// makes them a user preference rather than something the family owns. Touch
+// cycling must therefore carry the current band count across the switch instead
+// of re-seeding it: the user asked for a different face, not for their band
+// count to be reset. This is not cosmetic. With TouchSettings.rememberStyle set,
+// the cycler persists the face straight after applying it, so a re-seed here
+// wrote the table default over a saved custom value and no amount of cycling
+// back brought it home - the user had to set it again from the portal.
+//
+// Explicit face picks (portal, legacy style endpoint, the NVS legacy migration)
+// still go through applyFace() and take the seeded default, because there the
+// table is the only band count on offer.
+void applyFaceKeepBands(uint8_t faceIdx) {
+  const uint8_t bands = duoHeroBands;
+  applyFace(faceIdx);
+  duoHeroBands = bands;
+}
+
 void syncFaceFromDisplayStyle() {
   applyFace(faceIndexFromLegacyStyle(displayStyle));
 }

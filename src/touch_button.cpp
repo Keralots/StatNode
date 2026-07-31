@@ -65,8 +65,9 @@ static void recordAction(const char* action) {
 }
 
 // Cycles through face FAMILIES, so the mask bits are face indices. Selecting a
-// family re-seeds the Duo band count and row style from the table; a customised
-// value for either lives only as long as the user stays on that family.
+// family re-seeds the Duo row style from the table, because row style is part of
+// the family key for Duo+Flat. The band count is carried across instead: it is
+// not part of the key, so it belongs to the user and survives the cycle.
 static void cycleStyle(int8_t direction) {
   uint16_t mask = touchSettings.styleMask & FACE_ACTIVE_MASK;
   if (mask == 0) mask = 1u << FACE_DEFAULT;
@@ -77,7 +78,7 @@ static void cycleStyle(int8_t direction) {
     while (candidate < 0) candidate += FACE_COUNT;
     candidate %= FACE_COUNT;
     if (mask & (1u << candidate)) {
-      applyFace((uint8_t)candidate);
+      applyFaceKeepBands((uint8_t)candidate);
       if (touchSettings.rememberStyle) saveDisplayFace();
       ScreenState screen = getScreenState();
       if (screen == SCREEN_CLOCK) setScreenState(SCREEN_MONITOR);
