@@ -63,7 +63,7 @@ void formatMetricText(const PcMetric& metric, float raw, MetricText& out);
 
 // Bound slots whose metric is present in the live packet, in slot order.
 struct VisSlot {
-  uint8_t slotIdx;           // index into gaugeMap.slots / pcHistory
+  uint8_t slotIdx;           // index into the active page's slots / pcHistory
   const GaugeSlot* slot;
   const PcMetric* metric;
   const char* label;

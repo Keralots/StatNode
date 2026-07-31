@@ -330,8 +330,12 @@ extern char wifiPass[65];
 extern uint8_t brightness;
 extern DisplaySettings dispSettings;
 extern NetworkSettings netSettings;
-extern GaugeMapping gaugeMap;
-extern GaugeLabels gaugeLabels;
+// One binding set per metric page. Page 0 is the one every device has always
+// had; see METRIC_PAGE_COUNT for why the extra pages are additive.
+extern GaugeMapping gaugePages[METRIC_PAGE_COUNT];
+extern GaugeLabels gaugePageLabels[METRIC_PAGE_COUNT];
+// Page the renderer currently draws. Runtime state, not persisted here.
+extern uint8_t activeMetricPage;
 extern BacklightSettings backlightSettings;
 extern TouchSettings touchSettings;
 extern LedSettings ledSettings;
@@ -401,6 +405,13 @@ void defaultThemeSettings(ThemeSettings& ts);
 // Writes the face record (tuple + derived legacy style) on its own, without
 // rewriting every other NVS key. The touch cycler is its only caller.
 void saveDisplayFace();
+
+// The binding set the renderer, the history sampler and the portal editor act
+// on. Resolve this ONCE per frame and keep the result: VisSlot stores pointers
+// into the returned mapping, so re-resolving mid-frame after a page change
+// would leave earlier pointers describing a different page.
+GaugeMapping& activeGaugeMap();
+GaugeLabels&  activeGaugeLabels();
 
 // Keep custom labels ASCII-only because the bundled display fonts do not
 // provide general UTF-8 glyph coverage. Leading/trailing spaces are removed.

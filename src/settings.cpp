@@ -9,8 +9,9 @@ char wifiPass[65] = "";
 uint8_t brightness = 200;
 DisplaySettings dispSettings;
 NetworkSettings netSettings;
-GaugeMapping gaugeMap;
-GaugeLabels gaugeLabels;
+GaugeMapping gaugePages[METRIC_PAGE_COUNT];
+GaugeLabels gaugePageLabels[METRIC_PAGE_COUNT];
+uint8_t activeMetricPage = 0;
 BacklightSettings backlightSettings;
 TouchSettings touchSettings;
 LedSettings ledSettings;
@@ -324,8 +325,8 @@ void defaultNetworkSettings(NetworkSettings& ns) {
 void loadSettings() {
   defaultDisplaySettings(dispSettings);
   defaultNetworkSettings(netSettings);
-  defaultGaugeMapping(gaugeMap);
-  defaultGaugeLabels(gaugeLabels);
+  defaultGaugeMapping(gaugePages[0]);
+  defaultGaugeLabels(gaugePageLabels[0]);
   defaultBacklightSettings(backlightSettings);
   defaultTouchSettings(touchSettings);
   defaultLedSettings(ledSettings);
@@ -345,15 +346,20 @@ void loadSettings() {
   // also accept the older, shorter layout and copy what it holds into the
   // leading slots; the new trailing slots stay at their defaults (unbound is
   // the honest state - nothing was ever configured for them).
+  //
+  // These two keys are page 0's by definition. Pages past the first get their
+  // own keys rather than a longer blob here, so this migration keeps working
+  // untouched however many pages the build carries.
   {
     struct LegacyGaugeMappingV1 { GaugeSlot slots[LEGACY_GAUGE_SLOTS_V1]; };
     const size_t stored = prefs.getBytesLength("gauges");
     if (stored == sizeof(GaugeMapping)) {
-      prefs.getBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
+      prefs.getBytes("gauges", &gaugePages[0], sizeof(GaugeMapping));
     } else if (stored == sizeof(LegacyGaugeMappingV1)) {
       LegacyGaugeMappingV1 old;
       prefs.getBytes("gauges", &old, sizeof(old));
-      for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++) gaugeMap.slots[i] = old.slots[i];
+      for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++)
+        gaugePages[0].slots[i] = old.slots[i];
       Serial.printf("Settings: migrated %u-slot gauge mapping to %u slots\n",
                     (unsigned)LEGACY_GAUGE_SLOTS_V1, (unsigned)NUM_GAUGE_SLOTS);
     }
@@ -362,12 +368,12 @@ void loadSettings() {
     struct LegacyGaugeLabelsV1 { char labels[LEGACY_GAUGE_SLOTS_V1][GAUGE_LABEL_LENGTH]; };
     const size_t stored = prefs.getBytesLength("labels");
     if (stored == sizeof(GaugeLabels)) {
-      prefs.getBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
+      prefs.getBytes("labels", &gaugePageLabels[0], sizeof(GaugeLabels));
     } else if (stored == sizeof(LegacyGaugeLabelsV1)) {
       LegacyGaugeLabelsV1 old;
       prefs.getBytes("labels", &old, sizeof(old));
       for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++)
-        strlcpy(gaugeLabels.labels[i], old.labels[i], GAUGE_LABEL_LENGTH);
+        strlcpy(gaugePageLabels[0].labels[i], old.labels[i], GAUGE_LABEL_LENGTH);
     }
   }
   if (prefs.getBytesLength("backlight") == sizeof(BacklightSettings)) {
@@ -495,11 +501,14 @@ void loadSettings() {
   if (themeSettings.labelMode >= THEME_LABEL_MODE_COUNT)
     themeSettings.labelMode = THEME_LABEL_CLASSIC;
   if (themeSettings.tileTintPct > 30) themeSettings.tileTintPct = 30;
-  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    gaugeLabels.labels[i][GAUGE_LABEL_LENGTH - 1] = '\0';
-    char cleaned[GAUGE_LABEL_LENGTH];
-    sanitizeGaugeLabel(gaugeLabels.labels[i], cleaned, sizeof(cleaned));
-    strlcpy(gaugeLabels.labels[i], cleaned, sizeof(gaugeLabels.labels[i]));
+  for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++) {
+    for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+      char* label = gaugePageLabels[p].labels[i];
+      label[GAUGE_LABEL_LENGTH - 1] = '\0';
+      char cleaned[GAUGE_LABEL_LENGTH];
+      sanitizeGaugeLabel(label, cleaned, sizeof(cleaned));
+      strlcpy(label, cleaned, GAUGE_LABEL_LENGTH);
+    }
   }
 
   prefs.end();
@@ -538,8 +547,9 @@ void saveSettings() {
   prefs.begin(NVS_NAMESPACE, false);  // read-write
   prefs.putBytes("disp", &dispSettings, sizeof(DisplaySettings));
   prefs.putBytes("net", &netSettings, sizeof(NetworkSettings));
-  prefs.putBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
-  prefs.putBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
+  // Page 0 keeps the original key names so an older firmware still reads it.
+  prefs.putBytes("gauges", &gaugePages[0], sizeof(GaugeMapping));
+  prefs.putBytes("labels", &gaugePageLabels[0], sizeof(GaugeLabels));
   prefs.putBytes("backlight", &backlightSettings, sizeof(BacklightSettings));
   prefs.putBytes("touch", &touchSettings, sizeof(TouchSettings));
   prefs.putBytes("led", &ledSettings, sizeof(LedSettings));
@@ -587,9 +597,20 @@ void sanitizeGaugeLabel(const char* in, char* out, size_t outSize) {
   out[written] = '\0';
 }
 
+// activeMetricPage is only ever set from validated paths, but a stray value
+// would index out of bounds on every frame, so clamp at the accessor.
+GaugeMapping& activeGaugeMap() {
+  return gaugePages[activeMetricPage < METRIC_PAGE_COUNT ? activeMetricPage : 0];
+}
+
+GaugeLabels& activeGaugeLabels() {
+  return gaugePageLabels[activeMetricPage < METRIC_PAGE_COUNT ? activeMetricPage : 0];
+}
+
 const char* gaugeDisplayLabel(uint8_t slotIndex, const char* fallback) {
-  if (slotIndex < NUM_GAUGE_SLOTS && gaugeLabels.labels[slotIndex][0])
-    return gaugeLabels.labels[slotIndex];
+  const GaugeLabels& labels = activeGaugeLabels();
+  if (slotIndex < NUM_GAUGE_SLOTS && labels.labels[slotIndex][0])
+    return labels.labels[slotIndex];
   return fallback ? fallback : "";
 }
 

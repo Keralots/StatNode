@@ -290,15 +290,18 @@ static void handleApiConfig() {
   network["subnet"] = netSettings.subnet;
   network["dns"] = netSettings.dns;
 
+  // The editor shows the page the panel is showing.
+  const GaugeMapping& editMap = activeGaugeMap();
+  const GaugeLabels& editLabels = activeGaugeLabels();
   JsonArray gauges = doc["gauges"].to<JsonArray>();
   char colorBuf[8];
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
     JsonObject slot = gauges.add<JsonObject>();
-    slot["metricId"] = gaugeMap.slots[i].metricId;
-    slot["type"] = gaugeMap.slots[i].type;
-    slot["scaleMax"] = gaugeMap.slots[i].scaleMax;
-    slot["label"] = gaugeLabels.labels[i];
-    rgb565ToHtml(gaugeMap.slots[i].arcColor, colorBuf);
+    slot["metricId"] = editMap.slots[i].metricId;
+    slot["type"] = editMap.slots[i].type;
+    slot["scaleMax"] = editMap.slots[i].scaleMax;
+    slot["label"] = editLabels.labels[i];
+    rgb565ToHtml(editMap.slots[i].arcColor, colorBuf);
     slot["color"] = colorBuf;
   }
 
@@ -413,15 +416,17 @@ static void handleConfigExport() {
   network["subnet"] = netSettings.subnet;
   network["dns"] = netSettings.dns;
 
+  // The backup's "gauges" array is page 0 by definition, so that older firmware
+  // restoring this file gets the page it knows how to show.
   JsonArray gauges = doc["gauges"].to<JsonArray>();
   char colorBuf[8];
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
     JsonObject slot = gauges.add<JsonObject>();
-    slot["metricId"] = gaugeMap.slots[i].metricId;
-    slot["type"] = gaugeMap.slots[i].type;
-    slot["scaleMax"] = gaugeMap.slots[i].scaleMax;
-    slot["label"] = gaugeLabels.labels[i];
-    rgb565ToHtml(gaugeMap.slots[i].arcColor, colorBuf);
+    slot["metricId"] = gaugePages[0].slots[i].metricId;
+    slot["type"] = gaugePages[0].slots[i].type;
+    slot["scaleMax"] = gaugePages[0].slots[i].scaleMax;
+    slot["label"] = gaugePageLabels[0].labels[i];
+    rgb565ToHtml(gaugePages[0].slots[i].arcColor, colorBuf);
     slot["color"] = colorBuf;
   }
 
@@ -603,8 +608,10 @@ static void handleSaveGauges() {
   if (server.hasArg("sparks"))
     sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
 
+  GaugeMapping& editMap = activeGaugeMap();
+  GaugeLabels& editLabels = activeGaugeLabels();
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    GaugeSlot& slot = gaugeMap.slots[i];
+    GaugeSlot& slot = editMap.slots[i];
     char key[4];
     snprintf(key, sizeof(key), "m%u", i);
     slot.metricId = (uint8_t)clampedArg(key, slot.metricId, 0, MAX_METRICS);
@@ -616,8 +623,8 @@ static void handleSaveGauges() {
     if (server.hasArg(key)) slot.arcColor = htmlToRgb565(server.arg(key).c_str());
     snprintf(key, sizeof(key), "l%u", i);
     if (server.hasArg(key)) {
-      sanitizeGaugeLabel(server.arg(key).c_str(), gaugeLabels.labels[i],
-                         sizeof(gaugeLabels.labels[i]));
+      sanitizeGaugeLabel(server.arg(key).c_str(), editLabels.labels[i],
+                         GAUGE_LABEL_LENGTH);
     }
   }
   saveSettings();
@@ -697,8 +704,12 @@ static void handleSaveColors() {
     themeSettings.tileColor      = preset->tile;
     themeSettings.labelMode      = preset->labelMode;
     themeSettings.tileTintPct    = preset->tileTintPct;
-    for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++)
-      gaugeMap.slots[i].arcColor = preset->slots[i];
+    // A preset replaces the whole theme, so it resets the slot accents on every
+    // page rather than leaving pages the user is not looking at wearing the
+    // colors of the previous palette.
+    for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++)
+      for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++)
+        gaugePages[p].slots[i].arcColor = preset->slots[i];
   } else {
     if (server.hasArg("cbg"))    dispSettings.bgColor        = htmlToRgb565(server.arg("cbg").c_str());
     if (server.hasArg("ctrack")) dispSettings.trackColor     = htmlToRgb565(server.arg("ctrack").c_str());
@@ -873,8 +884,10 @@ static void handleConfigImport() {
 
   DisplaySettings nextDisplay = dispSettings;
   NetworkSettings nextNetwork = netSettings;
-  GaugeMapping nextGaugeMap = gaugeMap;
-  GaugeLabels nextGaugeLabels = gaugeLabels;
+  // The backup's "gauges" array restores into page 0, matching what export
+  // writes.
+  GaugeMapping nextGaugeMap = gaugePages[0];
+  GaugeLabels nextGaugeLabels = gaugePageLabels[0];
   BacklightSettings nextBacklight = backlightSettings;
   TouchSettings nextTouch = touchSettings;
   ThemeSettings nextTheme = themeSettings;
@@ -1099,8 +1112,8 @@ static void handleConfigImport() {
 
   dispSettings = nextDisplay;
   netSettings = nextNetwork;
-  gaugeMap = nextGaugeMap;
-  gaugeLabels = nextGaugeLabels;
+  gaugePages[0] = nextGaugeMap;
+  gaugePageLabels[0] = nextGaugeLabels;
   backlightSettings = nextBacklight;
   touchSettings = nextTouch;
   themeSettings = nextTheme;

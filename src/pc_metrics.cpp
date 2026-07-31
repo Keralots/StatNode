@@ -5,7 +5,7 @@
 // WiFiUDP (not AsyncUDP) on purpose: AsyncUDP froze on ESP32 in the sibling
 // projects. The socket is polled from loop() via pcMetricsHandle().
 #include "pc_metrics.h"
-#include "settings.h"   // gaugeMap: history rings follow the slot bindings
+#include "settings.h"   // activeGaugeMap(): history rings follow the slot bindings
 #include <WiFiUdp.h>
 #include <ArduinoJson.h>
 
@@ -101,9 +101,10 @@ static void parsePacket(const char* json) {
   // One history sample per slot per packet. A slot whose binding changed since
   // the last packet restarts its ring (the old samples belong to another
   // metric); a bound-but-absent metric leaves a gap rather than a fake sample.
+  const GaugeMapping& map = activeGaugeMap();
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
     SlotHistory& h = pcHistory[i];
-    uint8_t id = gaugeMap.slots[i].metricId;
+    uint8_t id = map.slots[i].metricId;
     if (h.metricId != id) {
       h.metricId = id;
       h.count = 0;

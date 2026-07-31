@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 //  Monitor screen - configurable metric->gauge mapping.
 //  Each of the NUM_GAUGE_SLOTS slots binds a PC metric (by id) to a gauge style,
-//  full-scale range, and color (gaugeMap, persisted in NVS, edited from the web
+//  full-scale range, and color (the active metric page, persisted in NVS, edited from the web
 //  portal). Slots are laid out in a responsive 3-column grid sized to the panel.
 // ---------------------------------------------------------------------------
 static uint8_t classifyByUnit(const char* unit) {
@@ -255,9 +255,12 @@ uint8_t debouncedStatus() {
 
 // Bound slots whose metric is present in the live packet, in slot order.
 uint8_t collectVisibleSlots(VisSlot out[NUM_GAUGE_SLOTS]) {
+  // Resolved once: out[].slot points into this mapping for the caller's whole
+  // frame, so every slot in the result must come from the same page.
+  const GaugeMapping& map = activeGaugeMap();
   uint8_t n = 0;
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    const GaugeSlot& s = gaugeMap.slots[i];
+    const GaugeSlot& s = map.slots[i];
     if (s.metricId == 0) continue;
     const PcMetric* m = pcMetricFindById(s.metricId);
     if (!m) continue;
