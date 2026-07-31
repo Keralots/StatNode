@@ -145,9 +145,16 @@ static void drawMonitorStyled(bool fr) {
     // sprites differently and must not both hold one while only one can draw.
     // Keyed on the NEW surface, independently of what else moved.
     if (faceChanged && !surfaceUsesGlass(face.surface)) glassReleaseSprites();
-    // A face change is one of the two moments the wash hysteresis is known to
-    // be stale; the other is a metric-mapping save (forceDisplayRedraw).
-    if (faceChanged) resetWashState();
+    // A face change is one of the two moments the per-slot hysteresis is known
+    // to be stale; the other is a metric-mapping save (forceDisplayRedraw).
+    // Warn latches and chart bounds go stale with the wash step, so clearing
+    // only the wash left a slot wearing the previous face's warn colour and
+    // charting on its old scale.
+    if (faceChanged) {
+      resetWashState();
+      resetSlotWarnState();
+      resetSparkBoundsState();
+    }
     lastLayout = face.layout;
     lastSurface = face.surface;
     lastBands = face.bands;
@@ -305,6 +312,11 @@ void forceDisplayRedraw(bool clearFirst) {
   lastUpdate = 0;
   resetGaugeTextCache();
   // The clearing form is what a metric-mapping save asks for, and a rebind or
-  // a scale change is exactly when a slot's wash step stops meaning anything.
-  if (clearFirst) resetWashState();
+  // a scale change is exactly when a slot's wash step, warn latch and smoothed
+  // chart bounds all stop meaning anything.
+  if (clearFirst) {
+    resetWashState();
+    resetSlotWarnState();
+    resetSparkBoundsState();
+  }
 }

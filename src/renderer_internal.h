@@ -171,7 +171,12 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc, uint8_t configuredBands,
                    uint8_t rowStyle);
 // Released when the surface stops being glass.
 void glassReleaseSprites();
-// The wash hysteresis is stale after a face change or a metric-mapping save.
+// Three pieces of per-slot state survive between frames and all describe the
+// metric a slot held when they were written, so all three go stale together:
+// after a face change, a metric-mapping save, and (once pages land) a page
+// switch. Reset them as a set.
 void resetWashState();
+void resetSlotWarnState();
+void resetSparkBoundsState();
 
 #endif // RENDERER_INTERNAL_H
