@@ -58,6 +58,13 @@ void updateDisplay();
 // clearFirst=true when the layout footprint may have changed; the panel clear
 // is deferred to the display loop. Safe from any context.
 void forceDisplayRedraw(bool clearFirst = false);
+// Switch the metric page the panel draws. A page swaps every slot's binding at
+// once, so this takes the same clearing repaint a metric-mapping save does.
+// No-ops on an out-of-range page or on the page already showing.
+void setActiveMetricPage(uint8_t page);
+// Step to the next/previous page that has bindings, wrapping. Does nothing when
+// fewer than two pages are bound, so an unconfigured device never blanks itself.
+void cycleMetricPage(int8_t direction);
 // Bracket for the /screen.bmp capture render: while set, the renderer leaves
 // the panel's pacing state (packet stamps, layout counts, smoothing, cached
 // text widths) untouched so the capture never disturbs the live display.

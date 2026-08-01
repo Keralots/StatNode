@@ -706,7 +706,7 @@ void drawTilesLayout(bool fr, const SurfaceCtx& sfc) {
           GlassCanvas c = glassCanvasFor(gGlassA, &gGlassA, 0, -headH);
           glassPaneWindow(c, 0, headH, cardW, bodyH, y, cardW, cardH, spec.radius,
                           paneAccent, sfc.tmpl, warnRim);
-          glassChart(c, pcHistory[slotIdx], slotIdx,
+          glassChart(c, pcHistoryForSlot(slotIdx), slotIdx,
                      spec.chartInset, headH + 2, cardW - spec.chartTrimW,
                      bodyH - spec.chartTrimH,
                      paneAccent, paneAccent, y, headH + 2, cardW, cardH, 0,
@@ -716,7 +716,7 @@ void drawTilesLayout(bool fr, const SurfaceCtx& sfc) {
           GlassCanvas c = glassCanvasFor(tft, nullptr, x, y);
           glassPaneWindow(c, 0, headH, cardW, bodyH, y, cardW, cardH, spec.radius,
                           paneAccent, sfc.tmpl, warnRim);
-          glassChart(c, pcHistory[slotIdx], slotIdx,
+          glassChart(c, pcHistoryForSlot(slotIdx), slotIdx,
                      spec.chartInset, headH + 2, cardW - spec.chartTrimW,
                      bodyH - spec.chartTrimH,
                      paneAccent, paneAccent, y, headH + 2, cardW, cardH, 0,
@@ -787,7 +787,7 @@ void drawTilesLayout(bool fr, const SurfaceCtx& sfc) {
     }
 
     if (spec.drawsChart && bodyH >= spec.chartMinBody) {
-      drawSparkline(pcHistory[slotIdx], slotIdx,
+      drawSparkline(pcHistoryForSlot(slotIdx), slotIdx,
                     x + spec.chartInset, y + headH + 2,
                     cardW - spec.chartTrimW, bodyH - spec.chartTrimH,
                     accent565, cardBg, advance, scroll);
@@ -899,7 +899,7 @@ void drawStripsScreen(bool fr, const SurfaceCtx& sfc) {
     } else {
       tft.fillRect(0, y, w, rowH, ground);
     }
-    sparkPlot(g, pcHistory[vis[i].slotIdx], vis[i].slotIdx,
+    sparkPlot(g, pcHistoryForSlot(vis[i].slotIdx), vis[i].slotIdx,
               0, oy + 2, w, rowH - 4, lineColor, advance, scroll);
     if (i) g.drawFastHLine(0, oy, w, dispSettings.trackColor);
 
@@ -1162,7 +1162,7 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
                             : glassCanvasFor(tft, nullptr, margin, y);
         glassPaneWindow(c, halfW, 0, paneW - halfW, bandH, y, paneW, bandH,
                         radius, paneAccent, sfc.tmpl, warnRim);
-        glassChart(c, pcHistory[vis[b].slotIdx], vis[b].slotIdx,
+        glassChart(c, pcHistoryForSlot(vis[b].slotIdx), vis[b].slotIdx,
                    halfW + 4, 8, paneW - halfW - 16, bandH - 18,
                    paneAccent, paneAccent, y, 8, paneW, bandH, 10,
                    sfc.tmpl, advance, scroll);
@@ -1284,7 +1284,7 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
         // across and glassChart leaves the columns to its left untouched, which
         // on a shared sprite is whatever the previous pill wrote there. The ring
         // is full about a minute after boot and this is the steady state.
-        const SlotHistory& phist = pcHistory[vis[vi].slotIdx];
+        const SlotHistory& phist = pcHistoryForSlot(vis[vi].slotIdx);
         if (phist.count >= PC_HISTORY_LEN) {
           glassPaneWindow(cb, 0, pillTextH, chartInsetX, pillChartH,
                           y, pillW, pillH, 12, paneAccent, sfc.tmpl, warnRim);
@@ -1346,7 +1346,7 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
       // Plot on the capsule floor, composed into the same sprite as the text so
       // the pill still reaches the panel in one push.
       if (pillChart) {
-        glassChart(c, pcHistory[vis[vi].slotIdx], vis[vi].slotIdx,
+        glassChart(c, pcHistoryForSlot(vis[vi].slotIdx), vis[vi].slotIdx,
                    chartInsetX, pillTextH, pillW - 2 * chartInsetX, pillChartH,
                    paneAccent, paneAccent, y, pillTextH, pillW, pillH, 8,
                    sfc.tmpl, advance, scroll);
@@ -1515,11 +1515,11 @@ void drawDuoLayout(bool fr, const SurfaceCtx& sfc,
     if (n >= 2) {
       // Extends slightly into the centre gap while preserving a clear margin
       // after a three-digit band value and its unit.
-      drawSparkline(pcHistory[vis[b].slotIdx], vis[b].slotIdx,
+      drawSparkline(pcHistoryForSlot(vis[b].slotIdx), vis[b].slotIdx,
                     chartX, y + spec.chartTop, w - chartX - spec.chartRight,
                     bandH - spec.chartTrimH, s.arcColor, ground, advance, scroll);
     } else {
-      drawSparkline(pcHistory[vis[b].slotIdx], vis[b].slotIdx,
+      drawSparkline(pcHistoryForSlot(vis[b].slotIdx), vis[b].slotIdx,
                     12, bandH + 8, w - 24, gridH - bandH - 16,
                     s.arcColor, ground, advance, scroll);
     }

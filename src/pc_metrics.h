@@ -27,23 +27,33 @@ struct PcMetricData {
 
 extern PcMetricData pcData;
 
-// Per-slot value history for the sparkline styles (STYLE_TILES hero/tile
-// charts, STYLE_HERO hero chart). One ring per gauge slot, sampled once per
-// received packet (~3 s companion cadence -> 60 samples = ~3 min window).
-// Always maintained regardless of the active style so the history is warm
-// when the user switches styles; cost is NUM_GAUGE_SLOTS id-lookups per
-// packet and ~1.5 KB of static RAM.
+// Value history for the sparkline and chart faces, sampled once per received
+// packet (~3 s companion cadence -> 60 samples = ~3 min window).
+//
+// Keyed by METRIC ID, not by gauge slot. The samples belong to the metric, not
+// to the grid position it happens to occupy, so a slot rebind or a metric page
+// switch no longer throws the ring away. That is what makes page rotation
+// usable: rotating every few seconds under the old slot-keyed rings reset every
+// chart on every switch, so no chart ever filled.
+//
+// Every metric the packet carries is sampled, not only the bound ones, so a
+// chart is already warm the moment the user binds a metric or rotates to a page
+// that shows it. Costs ~8 KB of static RAM.
 #define PC_HISTORY_LEN 60
 
 struct SlotHistory {
-  uint8_t metricId;   // metric id the samples belong to; on rebind the ring
-                      // self-resets (stale history must not chart a new metric)
+  uint8_t metricId;   // metric id the samples belong to; 0 for the empty ring
   uint8_t count;      // valid samples (0..PC_HISTORY_LEN)
   uint8_t head;       // next write index
   float   samples[PC_HISTORY_LEN];
 };
 
-extern SlotHistory pcHistory[NUM_GAUGE_SLOTS];
+// Indexed by metric id. Index 0 is the permanently empty "nothing bound" ring,
+// so an unbound slot charts nothing without needing a branch at each call site.
+extern SlotHistory pcHistoryById[MAX_METRICS + 1];
+
+// History for whatever the given slot of the ACTIVE metric page is bound to.
+const SlotHistory& pcHistoryForSlot(uint8_t slotIdx);
 
 // Sample oldest->newest: i in [0, count).
 static inline float pcHistoryAt(const SlotHistory& h, uint8_t i) {

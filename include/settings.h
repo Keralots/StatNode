@@ -396,6 +396,9 @@ bool factoryResetSettings();
 void defaultDisplaySettings(DisplaySettings& ds);
 void defaultNetworkSettings(NetworkSettings& ns);
 void defaultGaugeMapping(GaugeMapping& gm);
+// Every slot unbound, accents still seeded. What pages past the first get on a
+// factory-fresh device, so they stay skippable until the user fills one in.
+void emptyGaugeMapping(GaugeMapping& gm);
 void defaultGaugeLabels(GaugeLabels& labels);
 void defaultBacklightSettings(BacklightSettings& bs);
 void defaultTouchSettings(TouchSettings& ts);
@@ -412,6 +415,13 @@ void saveDisplayFace();
 // would leave earlier pointers describing a different page.
 GaugeMapping& activeGaugeMap();
 GaugeLabels&  activeGaugeLabels();
+
+// True when the page has at least one slot bound. The cycler skips pages that
+// do not, which is what keeps an unconfigured device single-page.
+bool metricPageHasBindings(uint8_t page);
+uint8_t metricPageCountBound();
+// Builds the NVS key for a page's mapping or labels blob ("gauges", "gauges1").
+void pageNvsKey(char* out, size_t len, const char* base, uint8_t page);
 
 // Keep custom labels ASCII-only because the bundled display fonts do not
 // provide general UTF-8 glyph coverage. Leading/trailing spaces are removed.

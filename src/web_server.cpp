@@ -141,6 +141,15 @@ static void faceArgs(uint8_t& layout, uint8_t& surface, uint8_t& bands,
   normalizeFace(layout, surface, bands, rowStyle);
 }
 
+// Same "absent means keep" rule the face fields follow. Switching pages from
+// here rather than from a dedicated endpoint keeps the portal's Display page the
+// one place that changes what the panel shows.
+static void applyMetricPageArg() {
+  const uint8_t page =
+    (uint8_t)clampedArg("page", activeMetricPage, 0, METRIC_PAGE_COUNT - 1);
+  setActiveMetricPage(page);
+}
+
 static void applyFaceArgs() {
   uint8_t layout, surface, bands, rowStyle;
   faceArgs(layout, surface, bands, rowStyle);
@@ -290,9 +299,19 @@ static void handleApiConfig() {
   network["subnet"] = netSettings.subnet;
   network["dns"] = netSettings.dns;
 
-  // The editor shows the page the panel is showing.
-  const GaugeMapping& editMap = activeGaugeMap();
-  const GaugeLabels& editLabels = activeGaugeLabels();
+  // The editor defaults to the page the panel is showing; ?page=N reads another
+  // one so a page can be edited without switching the panel onto it.
+  const uint8_t editPage =
+    (uint8_t)clampedArg("page", activeMetricPage, 0, METRIC_PAGE_COUNT - 1);
+  const GaugeMapping& editMap = gaugePages[editPage];
+  const GaugeLabels& editLabels = gaugePageLabels[editPage];
+
+  JsonObject pages = doc["pages"].to<JsonObject>();
+  pages["count"] = METRIC_PAGE_COUNT;
+  pages["active"] = activeMetricPage;
+  pages["editing"] = editPage;
+  JsonArray bound = pages["bound"].to<JsonArray>();
+  for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++) bound.add(metricPageHasBindings(p));
   JsonArray gauges = doc["gauges"].to<JsonArray>();
   char colorBuf[8];
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
@@ -547,6 +566,7 @@ static void handleGlassPreview() {
 static void handleSaveDisplay() {
   bool panelChanged = false;
 
+  applyMetricPageArg();
   applyFaceArgs();
   dispSettings.rotation = (uint8_t)clampedArg("rotation", dispSettings.rotation, 0, 3);
   brightness = (uint8_t)clampedArg("brightness", brightness, 0, 255);
@@ -608,8 +628,13 @@ static void handleSaveGauges() {
   if (server.hasArg("sparks"))
     sparkRedrawSec = (uint8_t)clampedArg("sparks", sparkRedrawSec, 1, 60);
 
-  GaugeMapping& editMap = activeGaugeMap();
-  GaugeLabels& editLabels = activeGaugeLabels();
+  // Which page this save edits. Defaults to the one on screen, so a client that
+  // knows nothing about pages keeps its old behavior; the portal names the page
+  // explicitly. An out-of-range value clamps rather than silently hitting page 0.
+  const uint8_t editPage =
+    (uint8_t)clampedArg("page", activeMetricPage, 0, METRIC_PAGE_COUNT - 1);
+  GaugeMapping& editMap = gaugePages[editPage];
+  GaugeLabels& editLabels = gaugePageLabels[editPage];
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
     GaugeSlot& slot = editMap.slots[i];
     char key[4];
@@ -628,7 +653,8 @@ static void handleSaveGauges() {
     }
   }
   saveSettings();
-  forceDisplayRedraw(true);
+  // Editing a page that is not on screen must not flash the one that is.
+  if (editPage == activeMetricPage) forceDisplayRedraw(true);
   sendJsonMessage(200, true, "Metric layout applied.");
 }
 
@@ -1236,6 +1262,9 @@ static void handleApiStatus() {
   // tooling read it. face_name is the one that can name all twelve faces.
   doc["style"]     = displayStyle;
   doc["face_name"] = faceNameFor(displayLayout, displaySurface, duoRowStyle);
+  doc["metric_page"] = activeMetricPage;
+  doc["metric_pages"] = METRIC_PAGE_COUNT;
+  doc["metric_pages_bound"] = metricPageCountBound();
   switch (clockFace) {
     case CLOCK_FACE_BREAKOUT: doc["clock_face"] = "breakout"; break;
     case CLOCK_FACE_RUNNER:   doc["clock_face"] = "runner"; break;

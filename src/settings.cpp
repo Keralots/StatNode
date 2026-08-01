@@ -227,14 +227,18 @@ void defaultDisplaySettings(DisplaySettings& ds) {
   ds.gauge    = { CLR_BLUE,  CLR_TEXT_DIM, CLR_TEXT };
 }
 
+// Slot accent defaults, shared by every page so a page the user fills in later
+// starts with the same readable spread instead of one flat colour.
+static const uint16_t kSlotPalette[NUM_GAUGE_SLOTS] = {
+  CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED,
+  CLR_VIOLET, CLR_ROSE
+};
+
 void defaultGaugeMapping(GaugeMapping& gm) {
   // Out-of-box mapping: bind metric ids 1..N to the slots and let each gauge
   // auto-classify by the metric's unit (same behavior the renderer had before
   // the mapping was configurable). The user overrides any slot from the portal.
-  static const uint16_t palette[NUM_GAUGE_SLOTS] = {
-    CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED,
-    CLR_VIOLET, CLR_ROSE
-  };
+  const uint16_t* palette = kSlotPalette;
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
     // Board-dependent: eight on the 320x480 panel, six on the 240x240 squares
     // (see DEFAULT_BOUND_SLOTS). Slots past that start empty, so a device never
@@ -244,6 +248,21 @@ void defaultGaugeMapping(GaugeMapping& gm) {
     gm.slots[i].type     = GAUGE_TYPE_AUTO;
     gm.slots[i].scaleMax = 0;            // 0 = use the gauge type's default scale
     gm.slots[i].arcColor = palette[i];
+  }
+}
+
+// Pages past the first boot completely unbound, on purpose. An unbound page is
+// skipped by the cycler, so a device that has never been given a second page
+// behaves exactly like a single-page device. Seeding them from
+// defaultGaugeMapping() instead would make every page identical AND make all of
+// them cyclable, so an untouched device would tap between three copies of the
+// same screen.
+void emptyGaugeMapping(GaugeMapping& gm) {
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+    gm.slots[i].metricId = 0;
+    gm.slots[i].type     = GAUGE_TYPE_AUTO;
+    gm.slots[i].scaleMax = 0;
+    gm.slots[i].arcColor = kSlotPalette[i];
   }
 }
 
@@ -327,6 +346,10 @@ void loadSettings() {
   defaultNetworkSettings(netSettings);
   defaultGaugeMapping(gaugePages[0]);
   defaultGaugeLabels(gaugePageLabels[0]);
+  for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
+    emptyGaugeMapping(gaugePages[p]);
+    defaultGaugeLabels(gaugePageLabels[p]);
+  }
   defaultBacklightSettings(backlightSettings);
   defaultTouchSettings(touchSettings);
   defaultLedSettings(ledSettings);
@@ -375,6 +398,17 @@ void loadSettings() {
       for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++)
         strlcpy(gaugePageLabels[0].labels[i], old.labels[i], GAUGE_LABEL_LENGTH);
     }
+  }
+  // Pages past the first never existed under an older firmware, so there is no
+  // legacy layout to accept here - an absent key just leaves the page empty.
+  for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
+    char key[16];
+    pageNvsKey(key, sizeof(key), "gauges", p);
+    if (prefs.getBytesLength(key) == sizeof(GaugeMapping))
+      prefs.getBytes(key, &gaugePages[p], sizeof(GaugeMapping));
+    pageNvsKey(key, sizeof(key), "labels", p);
+    if (prefs.getBytesLength(key) == sizeof(GaugeLabels))
+      prefs.getBytes(key, &gaugePageLabels[p], sizeof(GaugeLabels));
   }
   if (prefs.getBytesLength("backlight") == sizeof(BacklightSettings)) {
     BacklightSettings stored;
@@ -550,6 +584,13 @@ void saveSettings() {
   // Page 0 keeps the original key names so an older firmware still reads it.
   prefs.putBytes("gauges", &gaugePages[0], sizeof(GaugeMapping));
   prefs.putBytes("labels", &gaugePageLabels[0], sizeof(GaugeLabels));
+  for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
+    char key[16];
+    pageNvsKey(key, sizeof(key), "gauges", p);
+    prefs.putBytes(key, &gaugePages[p], sizeof(GaugeMapping));
+    pageNvsKey(key, sizeof(key), "labels", p);
+    prefs.putBytes(key, &gaugePageLabels[p], sizeof(GaugeLabels));
+  }
   prefs.putBytes("backlight", &backlightSettings, sizeof(BacklightSettings));
   prefs.putBytes("touch", &touchSettings, sizeof(TouchSettings));
   prefs.putBytes("led", &ledSettings, sizeof(LedSettings));
@@ -595,6 +636,31 @@ void sanitizeGaugeLabel(const char* in, char* out, size_t outSize) {
   }
   while (written > 0 && out[written - 1] == ' ') written--;
   out[written] = '\0';
+}
+
+// Page 0 keeps the bare key so an older firmware still finds it; later pages
+// append their index. NVS caps key names at 15 characters, which leaves room
+// well past the page counts this device will ever carry.
+void pageNvsKey(char* out, size_t len, const char* base, uint8_t page) {
+  if (page == 0) strlcpy(out, base, len);
+  else snprintf(out, len, "%s%u", base, (unsigned)page);
+}
+
+// A page with nothing bound has nothing to draw, so the cycler steps over it.
+// Deliberately keyed on the stored binding rather than on what the live packet
+// carries: otherwise a page would appear and vanish as the companion restarts.
+bool metricPageHasBindings(uint8_t page) {
+  if (page >= METRIC_PAGE_COUNT) return false;
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++)
+    if (gaugePages[page].slots[i].metricId != 0) return true;
+  return false;
+}
+
+uint8_t metricPageCountBound() {
+  uint8_t n = 0;
+  for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++)
+    if (metricPageHasBindings(p)) n++;
+  return n;
 }
 
 // activeMetricPage is only ever set from validated paths, but a stray value

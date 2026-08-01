@@ -10,7 +10,13 @@
 #include <ArduinoJson.h>
 
 PcMetricData pcData = {};
-SlotHistory pcHistory[NUM_GAUGE_SLOTS] = {};
+SlotHistory pcHistoryById[MAX_METRICS + 1] = {};
+
+const SlotHistory& pcHistoryForSlot(uint8_t slotIdx) {
+  if (slotIdx >= NUM_GAUGE_SLOTS) return pcHistoryById[0];
+  const uint8_t id = activeGaugeMap().slots[slotIdx].metricId;
+  return pcHistoryById[id <= MAX_METRICS ? id : 0];
+}
 
 static WiFiUDP udp;
 
@@ -98,22 +104,16 @@ static void parsePacket(const char* json) {
   pcData.lastReceived = millis();
   pcData.online = true;
 
-  // One history sample per slot per packet. A slot whose binding changed since
-  // the last packet restarts its ring (the old samples belong to another
-  // metric); a bound-but-absent metric leaves a gap rather than a fake sample.
-  const GaugeMapping& map = activeGaugeMap();
-  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    SlotHistory& h = pcHistory[i];
-    uint8_t id = map.slots[i].metricId;
-    if (h.metricId != id) {
-      h.metricId = id;
-      h.count = 0;
-      h.head = 0;
-    }
-    if (id == 0) continue;
-    const PcMetric* m = pcMetricFindById(id);
-    if (!m) continue;
-    h.samples[h.head] = m->value;
+  // One history sample per METRIC per packet. Rings are keyed by metric id, so
+  // nothing here needs invalidating when a slot is rebound or the metric page
+  // changes - the ring follows the metric. A metric missing from this packet
+  // simply does not advance, leaving a gap rather than a fake sample.
+  for (uint8_t i = 0; i < pcData.count; i++) {
+    const PcMetric& m = pcData.metrics[i];
+    if (m.id == 0 || m.id > MAX_METRICS) continue;
+    SlotHistory& h = pcHistoryById[m.id];
+    h.metricId = m.id;
+    h.samples[h.head] = m.value;
     h.head = (uint8_t)((h.head + 1) % PC_HISTORY_LEN);
     if (h.count < PC_HISTORY_LEN) h.count++;
   }

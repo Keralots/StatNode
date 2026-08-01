@@ -320,3 +320,25 @@ void forceDisplayRedraw(bool clearFirst) {
     resetSparkBoundsState();
   }
 }
+
+void setActiveMetricPage(uint8_t page) {
+  if (page >= METRIC_PAGE_COUNT || page == activeMetricPage) return;
+  activeMetricPage = page;
+  // A page switch rebinds every slot at once, which is the strongest form of
+  // the metric-mapping save this call already models: it clears the panel, the
+  // gauge text cache and all three per-slot hysteresis states.
+  forceDisplayRedraw(true);
+}
+
+void cycleMetricPage(int8_t direction) {
+  if (metricPageCountBound() < 2) return;
+  for (uint8_t step = 1; step <= METRIC_PAGE_COUNT; step++) {
+    int candidate = (int)activeMetricPage + direction * step;
+    while (candidate < 0) candidate += METRIC_PAGE_COUNT;
+    candidate %= METRIC_PAGE_COUNT;
+    if (metricPageHasBindings((uint8_t)candidate)) {
+      setActiveMetricPage((uint8_t)candidate);
+      return;
+    }
+  }
+}

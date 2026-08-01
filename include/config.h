@@ -133,7 +133,7 @@
 // pages existed. Page 0 always persists under the original NVS keys "gauges" and
 // "labels", so raising this count adds keys instead of resizing a blob and never
 // migrates an existing device.
-#define METRIC_PAGE_COUNT            1
+#define METRIC_PAGE_COUNT            3
 
 // Default GPIO for the TTP223 capacitive pad. 4 on both S3 and C3: that is where
 // the pre-shipped units wire it, and the C3's pad was never physically wired, so
