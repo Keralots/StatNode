@@ -331,6 +331,7 @@ void defaultPageSettings(PageSettings& ps) {
   // interval would do nothing anyway, and a display that starts moving on its
   // own after the user fills in a second page would be a surprise.
   ps.rotateSeconds = 0;
+  ps.rotateUnit = 0;
   // Long enough to actually read the page you just tapped to.
   ps.pinSeconds = 30;
   ps.rememberPage = 0;

@@ -370,7 +370,8 @@ void handleMetricPageRotation() {
   // Signed difference so the comparison survives the millis() wrap at ~49 days.
   if ((int32_t)(now - gPagePinUntil) < 0) return;
 
-  const uint32_t interval = (uint32_t)pageSettings.rotateSeconds * 1000u;
+  const uint32_t step = pageSettings.rotateUnit ? 60000u : 1000u;
+  const uint32_t interval = (uint32_t)pageSettings.rotateSeconds * step;
   if (gPageRotateAt == 0) {
     gPageRotateAt = now + interval;
     return;

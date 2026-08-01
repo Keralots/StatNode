@@ -49,11 +49,15 @@ struct GaugeLabels {
 // any existing key.
 struct PageSettings {
   uint8_t version;
-  uint8_t rotateSeconds;   // auto-advance interval; 0 = rotation off
+  uint8_t rotateSeconds;   // auto-advance interval, in rotateUnit; 0 = off
   uint8_t pinSeconds;      // a manual switch holds the page this long
   uint8_t rememberPage;    // restore startPage at boot instead of page 0
   uint8_t startPage;       // only meaningful when rememberPage is set
-  uint8_t reserved[3];
+  uint8_t rotateUnit;      // 0 = rotateSeconds counts seconds, 1 = minutes.
+                           // Took a reserved byte so the blob keeps its size
+                           // and version, and an old record reads back as
+                           // seconds, which is what it always meant.
+  uint8_t reserved[2];
 };
 
 // Backlight automation is also a separate versioned NVS blob. `brightness`

@@ -163,6 +163,8 @@ static void applyPageSettingsArgs() {
       !server.hasArg("pageRemember")) return;
   pageSettings.rotateSeconds =
     (uint8_t)clampedArg("pageRotate", pageSettings.rotateSeconds, 0, 255);
+  pageSettings.rotateUnit =
+    (uint8_t)clampedArg("pageRotateUnit", pageSettings.rotateUnit, 0, 1);
   pageSettings.pinSeconds =
     (uint8_t)clampedArg("pagePin", pageSettings.pinSeconds, 0, 240);
   pageSettings.rememberPage = server.hasArg("pageRemember") ? 1 : 0;
@@ -330,6 +332,7 @@ static void handleApiConfig() {
   pages["active"] = activeMetricPage;
   pages["editing"] = editPage;
   pages["rotateSeconds"] = pageSettings.rotateSeconds;
+  pages["rotateUnit"] = pageSettings.rotateUnit;
   pages["pinSeconds"] = pageSettings.pinSeconds;
   pages["rememberPage"] = pageSettings.rememberPage != 0;
   JsonArray bound = pages["bound"].to<JsonArray>();
@@ -478,6 +481,9 @@ static void handleConfigExport() {
   // made those builds reject the file outright, since they range-check it.
   JsonObject pagesOut = doc["pages"].to<JsonObject>();
   pagesOut["rotateSeconds"] = pageSettings.rotateSeconds;
+  // Absent on backups taken before the minute option existed, and absent means
+  // seconds, so an old file restores the interval it was written with.
+  pagesOut["rotateUnit"] = pageSettings.rotateUnit;
   pagesOut["pinSeconds"] = pageSettings.pinSeconds;
   pagesOut["rememberPage"] = pageSettings.rememberPage != 0;
   JsonArray extra = pagesOut["slots"].to<JsonArray>();
@@ -1209,8 +1215,17 @@ static void handleConfigImport() {
   if (!pagesIn.isNull()) {
     if (!pagesIn["rotateSeconds"].isNull() &&
         readBackupInteger(pagesIn, "rotateSeconds", 0, 255, integer, error,
-                          "pages.rotateSeconds"))
+                          "pages.rotateSeconds")) {
       nextPageSettings.rotateSeconds = (uint8_t)integer;
+      // The interval and its unit travel together. A file written before the
+      // unit existed always meant seconds, so take the number without its unit
+      // rather than reading it against whatever the device is set to now.
+      nextPageSettings.rotateUnit = 0;
+    }
+    if (!pagesIn["rotateUnit"].isNull() &&
+        readBackupInteger(pagesIn, "rotateUnit", 0, 1, integer, error,
+                          "pages.rotateUnit"))
+      nextPageSettings.rotateUnit = (uint8_t)integer;
     if (!pagesIn["pinSeconds"].isNull() &&
         readBackupInteger(pagesIn, "pinSeconds", 0, 240, integer, error,
                           "pages.pinSeconds"))
