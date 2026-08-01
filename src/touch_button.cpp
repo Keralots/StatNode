@@ -88,8 +88,27 @@ static void cycleStyle(int8_t direction) {
   }
 }
 
+// A page switch from the pad is a deliberate choice, so it pins rotation and,
+// when the user asked for it, becomes the page the device boots on.
+static void cyclePage(int8_t direction) {
+  const uint8_t before = activeMetricPage;
+  cycleMetricPage(direction);
+  if (activeMetricPage == before) return;   // fewer than two pages bound
+  pinMetricPage();
+  saveStartMetricPage();
+  if (getScreenState() == SCREEN_CLOCK) setScreenState(SCREEN_MONITOR);
+}
+
 static void runAction(uint8_t action, bool longPress) {
   switch (action) {
+    case TOUCH_ACTION_NEXT_PAGE:
+      cyclePage(1);
+      recordAction(longPress ? "hold: next page" : "tap: next page");
+      break;
+    case TOUCH_ACTION_PREV_PAGE:
+      cyclePage(-1);
+      recordAction(longPress ? "hold: previous page" : "tap: previous page");
+      break;
     case TOUCH_ACTION_NEXT_STYLE:
       cycleStyle(1);
       recordAction(longPress ? "hold: next layout" : "tap: next layout");

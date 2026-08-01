@@ -45,6 +45,17 @@ struct GaugeLabels {
   char labels[NUM_GAUGE_SLOTS][GAUGE_LABEL_LENGTH];
 };
 
+// Metric page behavior. Its own versioned NVS blob so adding it cannot disturb
+// any existing key.
+struct PageSettings {
+  uint8_t version;
+  uint8_t rotateSeconds;   // auto-advance interval; 0 = rotation off
+  uint8_t pinSeconds;      // a manual switch holds the page this long
+  uint8_t rememberPage;    // restore startPage at boot instead of page 0
+  uint8_t startPage;       // only meaningful when rememberPage is set
+  uint8_t reserved[3];
+};
+
 // Backlight automation is also a separate versioned NVS blob. `brightness`
 // remains the normal daytime level for backwards compatibility.
 struct BacklightSettings {
@@ -217,6 +228,10 @@ enum TouchAction : uint8_t {
   TOUCH_ACTION_PREV_STYLE   = 2,
   TOUCH_ACTION_TOGGLE_CLOCK = 3,
   TOUCH_ACTION_TOGGLE_POWER = 4,
+  // Added after the face actions, so existing stored values keep their meaning
+  // and TouchSettings needs no version bump.
+  TOUCH_ACTION_NEXT_PAGE    = 5,
+  TOUCH_ACTION_PREV_PAGE    = 6,
   TOUCH_ACTION_COUNT
 };
 
@@ -340,6 +355,7 @@ extern BacklightSettings backlightSettings;
 extern TouchSettings touchSettings;
 extern LedSettings ledSettings;
 extern ThemeSettings themeSettings;
+extern PageSettings pageSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
 // The face tuple. Each of the four is its own NVS scalar, never a blob field,
 // for the same reason displayStyle is one: growing "disp" resizes it and a size
@@ -405,6 +421,11 @@ void defaultTouchSettings(TouchSettings& ts);
 void defaultLedSettings(LedSettings& ls);
 void saveLedSettings();
 void defaultThemeSettings(ThemeSettings& ts);
+void defaultPageSettings(PageSettings& ps);
+// Persists the page the user deliberately selected, when rememberPage is set.
+// Automatic rotation deliberately does NOT call this: writing every advance
+// would burn NVS for a value that is only interesting when a human chose it.
+void saveStartMetricPage();
 // Writes the face record (tuple + derived legacy style) on its own, without
 // rewriting every other NVS key. The touch cycler is its only caller.
 void saveDisplayFace();

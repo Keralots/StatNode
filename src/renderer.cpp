@@ -342,3 +342,40 @@ void cycleMetricPage(int8_t direction) {
     }
   }
 }
+
+// Automatic page rotation.
+//
+// Ticked from loop() rather than from updateDisplay() on purpose: the
+// \screen.bmp handler calls updateDisplay() synchronously, so a timer living
+// there would advance the page every time the portal takes its five second
+// screenshot. The gCaptureRender guard below is belt and braces for the same
+// reason.
+static uint32_t gPageRotateAt = 0;
+static uint32_t gPagePinUntil = 0;
+
+void pinMetricPage() {
+  gPagePinUntil = millis() + (uint32_t)pageSettings.pinSeconds * 1000u;
+  gPageRotateAt = 0;   // re-armed from the pin expiry, not from the old deadline
+}
+
+void handleMetricPageRotation() {
+  if (pageSettings.rotateSeconds == 0) return;
+  if (gCaptureRender) return;
+  // Rotating behind a clock or a blank panel would just mean the user finds a
+  // different page than the one they left when the monitor comes back.
+  if (getScreenState() != SCREEN_MONITOR) return;
+  if (metricPageCountBound() < 2) return;
+
+  const uint32_t now = millis();
+  // Signed difference so the comparison survives the millis() wrap at ~49 days.
+  if ((int32_t)(now - gPagePinUntil) < 0) return;
+
+  const uint32_t interval = (uint32_t)pageSettings.rotateSeconds * 1000u;
+  if (gPageRotateAt == 0) {
+    gPageRotateAt = now + interval;
+    return;
+  }
+  if ((int32_t)(now - gPageRotateAt) < 0) return;
+  cycleMetricPage(1);
+  gPageRotateAt = millis() + interval;
+}

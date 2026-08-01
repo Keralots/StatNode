@@ -16,6 +16,7 @@ BacklightSettings backlightSettings;
 TouchSettings touchSettings;
 LedSettings ledSettings;
 ThemeSettings themeSettings;
+PageSettings pageSettings;
 uint8_t displayStyle = STYLE_DEFAULT;
 uint8_t displayLayout = LAYOUT_TILES;
 uint8_t displaySurface = SURFACE_FLAT;
@@ -38,6 +39,7 @@ static const uint8_t BACKLIGHT_SETTINGS_VERSION = 1;
 static const uint8_t TOUCH_SETTINGS_VERSION = 3;
 static const uint8_t LED_SETTINGS_VERSION = 1;
 static const uint8_t THEME_SETTINGS_VERSION = 1;
+static const uint8_t PAGE_SETTINGS_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 //  Face families
@@ -322,6 +324,19 @@ void defaultThemeSettings(ThemeSettings& ts) {
   ts.tileColor = CLR_CARD;
 }
 
+void defaultPageSettings(PageSettings& ps) {
+  memset(&ps, 0, sizeof(ps));
+  ps.version = PAGE_SETTINGS_VERSION;
+  // Rotation off out of the box. A fresh device has one bound page, so an
+  // interval would do nothing anyway, and a display that starts moving on its
+  // own after the user fills in a second page would be a surprise.
+  ps.rotateSeconds = 0;
+  // Long enough to actually read the page you just tapped to.
+  ps.pinSeconds = 30;
+  ps.rememberPage = 0;
+  ps.startPage = 0;
+}
+
 void defaultNetworkSettings(NetworkSettings& ns) {
   ns.useDHCP = true;
   ns.staticIP[0] = '\0';
@@ -354,6 +369,7 @@ void loadSettings() {
   defaultTouchSettings(touchSettings);
   defaultLedSettings(ledSettings);
   defaultThemeSettings(themeSettings);
+  defaultPageSettings(pageSettings);
 
   prefs.begin(NVS_NAMESPACE, true);  // read-only
 
@@ -409,6 +425,11 @@ void loadSettings() {
     pageNvsKey(key, sizeof(key), "labels", p);
     if (prefs.getBytesLength(key) == sizeof(GaugeLabels))
       prefs.getBytes(key, &gaugePageLabels[p], sizeof(GaugeLabels));
+  }
+  if (prefs.getBytesLength("pages") == sizeof(PageSettings)) {
+    PageSettings stored;
+    prefs.getBytes("pages", &stored, sizeof(stored));
+    if (stored.version == PAGE_SETTINGS_VERSION) pageSettings = stored;
   }
   if (prefs.getBytesLength("backlight") == sizeof(BacklightSettings)) {
     BacklightSettings stored;
@@ -535,6 +556,14 @@ void loadSettings() {
   if (themeSettings.labelMode >= THEME_LABEL_MODE_COUNT)
     themeSettings.labelMode = THEME_LABEL_CLASSIC;
   if (themeSettings.tileTintPct > 30) themeSettings.tileTintPct = 30;
+  if (pageSettings.pinSeconds > 240) pageSettings.pinSeconds = 240;
+  if (pageSettings.startPage >= METRIC_PAGE_COUNT) pageSettings.startPage = 0;
+  // Restore a remembered page only if it still has bindings. A page the user
+  // has since emptied would otherwise boot the panel into an empty screen with
+  // no obvious way back.
+  if (pageSettings.rememberPage && metricPageHasBindings(pageSettings.startPage))
+    activeMetricPage = pageSettings.startPage;
+
   for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++) {
     for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
       char* label = gaugePageLabels[p].labels[i];
@@ -595,6 +624,7 @@ void saveSettings() {
   prefs.putBytes("touch", &touchSettings, sizeof(TouchSettings));
   prefs.putBytes("led", &ledSettings, sizeof(LedSettings));
   prefs.putBytes("theme", &themeSettings, sizeof(ThemeSettings));
+  prefs.putBytes("pages", &pageSettings, sizeof(PageSettings));
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("bright", brightness);
@@ -614,6 +644,15 @@ bool factoryResetSettings() {
   const bool cleared = prefs.clear();
   prefs.end();
   return cleared;
+}
+
+void saveStartMetricPage() {
+  if (!pageSettings.rememberPage) return;
+  if (pageSettings.startPage == activeMetricPage) return;  // nothing to rewrite
+  pageSettings.startPage = activeMetricPage;
+  prefs.begin(NVS_NAMESPACE, false);
+  prefs.putBytes("pages", &pageSettings, sizeof(PageSettings));
+  prefs.end();
 }
 
 void saveDisplayFace() {

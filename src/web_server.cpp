@@ -147,7 +147,26 @@ static void faceArgs(uint8_t& layout, uint8_t& surface, uint8_t& bands,
 static void applyMetricPageArg() {
   const uint8_t page =
     (uint8_t)clampedArg("page", activeMetricPage, 0, METRIC_PAGE_COUNT - 1);
+  if (page == activeMetricPage) return;
   setActiveMetricPage(page);
+  // Picking a page in the portal is as deliberate as tapping for it.
+  pinMetricPage();
+  saveStartMetricPage();
+}
+
+static void applyPageSettingsArgs() {
+  // rememberPage is a checkbox, and an absent checkbox reads as false. Without
+  // this guard a client posting only "page" or only a face field would silently
+  // clear it, which is exactly how the night-mode flags got wiped during
+  // testing. Only touch these when the request actually carries the block.
+  if (!server.hasArg("pageRotate") && !server.hasArg("pagePin") &&
+      !server.hasArg("pageRemember")) return;
+  pageSettings.rotateSeconds =
+    (uint8_t)clampedArg("pageRotate", pageSettings.rotateSeconds, 0, 255);
+  pageSettings.pinSeconds =
+    (uint8_t)clampedArg("pagePin", pageSettings.pinSeconds, 0, 240);
+  pageSettings.rememberPage = server.hasArg("pageRemember") ? 1 : 0;
+  if (pageSettings.rememberPage) pageSettings.startPage = activeMetricPage;
 }
 
 static void applyFaceArgs() {
@@ -310,6 +329,9 @@ static void handleApiConfig() {
   pages["count"] = METRIC_PAGE_COUNT;
   pages["active"] = activeMetricPage;
   pages["editing"] = editPage;
+  pages["rotateSeconds"] = pageSettings.rotateSeconds;
+  pages["pinSeconds"] = pageSettings.pinSeconds;
+  pages["rememberPage"] = pageSettings.rememberPage != 0;
   JsonArray bound = pages["bound"].to<JsonArray>();
   for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++) bound.add(metricPageHasBindings(p));
   JsonArray gauges = doc["gauges"].to<JsonArray>();
@@ -566,6 +588,7 @@ static void handleGlassPreview() {
 static void handleSaveDisplay() {
   bool panelChanged = false;
 
+  applyPageSettingsArgs();
   applyMetricPageArg();
   applyFaceArgs();
   dispSettings.rotation = (uint8_t)clampedArg("rotation", dispSettings.rotation, 0, 3);

@@ -65,6 +65,11 @@ void setActiveMetricPage(uint8_t page);
 // Step to the next/previous page that has bindings, wrapping. Does nothing when
 // fewer than two pages are bound, so an unconfigured device never blanks itself.
 void cycleMetricPage(int8_t direction);
+// Suppress auto-rotation for PageSettings.pinSeconds. Called after any manual
+// page change so the page you just picked stays put long enough to read.
+void pinMetricPage();
+// Auto-rotation tick. Call from loop(), never from updateDisplay().
+void handleMetricPageRotation();
 // Bracket for the /screen.bmp capture render: while set, the renderer leaves
 // the panel's pacing state (packet stamps, layout counts, smoothing, cached
 // text widths) untouched so the capture never disturbs the live display.

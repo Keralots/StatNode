@@ -80,6 +80,7 @@ void loop() {
     setScreenState(SCREEN_MONITOR);
   }
 
+  handleMetricPageRotation();
   updateBacklightControl();
   // After the backlight: the LED reads the level the panel just settled on to
   // decide whether it should be dark too.
