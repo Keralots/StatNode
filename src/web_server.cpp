@@ -699,6 +699,14 @@ static void handleSaveGauges() {
     }
   }
   saveSettings();
+  // Clearing every binding on the page currently shown would leave the panel
+  // blank with no obvious way back, so fall back to one that still has some.
+  // If nothing is bound anywhere there is nothing to fall back to, and staying
+  // put is the honest result.
+  if (!metricPageHasBindings(activeMetricPage)) {
+    for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++)
+      if (metricPageHasBindings(p)) { setActiveMetricPage(p); break; }
+  }
   // Editing a page that is not on screen must not flash the one that is.
   if (editPage == activeMetricPage) forceDisplayRedraw(true);
   sendJsonMessage(200, true, "Metric layout applied.");
