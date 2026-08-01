@@ -471,6 +471,29 @@ static void handleConfigExport() {
     slot["color"] = colorBuf;
   }
 
+  // Pages past the first ride in an OPTIONAL object rather than changing the
+  // mandatory "gauges" array or the schema number. A backup taken here still
+  // restores on a firmware that predates pages: it reads "gauges" as page 0 and
+  // ignores what it does not recognise. Bumping the schema would instead have
+  // made those builds reject the file outright, since they range-check it.
+  JsonObject pagesOut = doc["pages"].to<JsonObject>();
+  pagesOut["rotateSeconds"] = pageSettings.rotateSeconds;
+  pagesOut["pinSeconds"] = pageSettings.pinSeconds;
+  pagesOut["rememberPage"] = pageSettings.rememberPage != 0;
+  JsonArray extra = pagesOut["slots"].to<JsonArray>();
+  for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
+    JsonArray pageArr = extra.add<JsonArray>();
+    for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+      JsonObject slot = pageArr.add<JsonObject>();
+      slot["metricId"] = gaugePages[p].slots[i].metricId;
+      slot["type"] = gaugePages[p].slots[i].type;
+      slot["scaleMax"] = gaugePages[p].slots[i].scaleMax;
+      slot["label"] = gaugePageLabels[p].labels[i];
+      rgb565ToHtml(gaugePages[p].slots[i].arcColor, colorBuf);
+      slot["color"] = colorBuf;
+    }
+  }
+
   String out;
   serializeJson(doc, out);
   server.sendHeader("Cache-Control", "no-cache, no-store, must-revalidate");
@@ -852,6 +875,10 @@ static bool isHexDigit(char c) {
          (c >= 'A' && c <= 'F');
 }
 
+// Forward declaration: the page parser below is defined after readBackupColor.
+static bool readBackupPage(JsonArrayConst arr, GaugeMapping& map,
+                           GaugeLabels& labels, const char* what, String& error);
+
 static bool readBackupColor(JsonObjectConst object, const char* key,
                             uint16_t& out, String& error, const char* path) {
   const char* value = nullptr;
@@ -863,6 +890,44 @@ static bool readBackupColor(JsonObjectConst object, const char* key,
       return backupFieldError(error, path, "expected a #RRGGBB color");
   }
   out = htmlToRgb565(value);
+  return true;
+}
+
+// One page's worth of slot objects. Shared by the mandatory top-level "gauges"
+// array (page 0) and by each entry of the optional "pages.slots", so every page
+// is validated identically no matter which key carried it.
+static bool readBackupPage(JsonArrayConst arr, GaugeMapping& map,
+                           GaugeLabels& labels, const char* what, String& error) {
+  if (arr.isNull() || arr.size() != NUM_GAUGE_SLOTS) {
+    error = "The backup has the wrong number of metric slots.";
+    return false;
+  }
+  long integer = 0;
+  const char* textValue = nullptr;
+  uint8_t slotIndex = 0;
+  for (JsonObjectConst slot : arr) {
+    char path[40];
+    snprintf(path, sizeof(path), "%s[%u].metricId", what, slotIndex);
+    if (!readBackupInteger(slot, "metricId", 0, MAX_METRICS, integer, error, path))
+      return false;
+    map.slots[slotIndex].metricId = (uint8_t)integer;
+    snprintf(path, sizeof(path), "%s[%u].type", what, slotIndex);
+    if (!readBackupInteger(slot, "type", 0, GAUGE_TYPE_COUNT - 1, integer, error, path))
+      return false;
+    map.slots[slotIndex].type = (uint8_t)integer;
+    snprintf(path, sizeof(path), "%s[%u].scaleMax", what, slotIndex);
+    if (!readBackupInteger(slot, "scaleMax", 0, 65535, integer, error, path))
+      return false;
+    map.slots[slotIndex].scaleMax = (uint16_t)integer;
+    snprintf(path, sizeof(path), "%s[%u].label", what, slotIndex);
+    if (!readBackupString(slot, "label", GAUGE_LABEL_LENGTH - 1, textValue, error, path))
+      return false;
+    sanitizeGaugeLabel(textValue, labels.labels[slotIndex], GAUGE_LABEL_LENGTH);
+    snprintf(path, sizeof(path), "%s[%u].color", what, slotIndex);
+    if (!readBackupColor(slot, "color", map.slots[slotIndex].arcColor, error, path))
+      return false;
+    slotIndex++;
+  }
   return true;
 }
 
@@ -934,9 +999,18 @@ static void handleConfigImport() {
   DisplaySettings nextDisplay = dispSettings;
   NetworkSettings nextNetwork = netSettings;
   // The backup's "gauges" array restores into page 0, matching what export
-  // writes.
-  GaugeMapping nextGaugeMap = gaugePages[0];
-  GaugeLabels nextGaugeLabels = gaugePageLabels[0];
+  // writes. Pages past the first start EMPTY rather than from what the device
+  // currently holds: a backup that carries no "pages" block describes a
+  // single-page device, so restoring it must not silently leave pages behind.
+  GaugeMapping nextPages[METRIC_PAGE_COUNT];
+  GaugeLabels nextPageLabels[METRIC_PAGE_COUNT];
+  nextPages[0] = gaugePages[0];
+  nextPageLabels[0] = gaugePageLabels[0];
+  for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
+    emptyGaugeMapping(nextPages[p]);
+    defaultGaugeLabels(nextPageLabels[p]);
+  }
+  PageSettings nextPageSettings = pageSettings;
   BacklightSettings nextBacklight = backlightSettings;
   TouchSettings nextTouch = touchSettings;
   ThemeSettings nextTheme = themeSettings;
@@ -1116,44 +1190,46 @@ static void handleConfigImport() {
     strlcpy(networkTargets[i], textValue, networkSizes[i]);
   }
 
-  uint8_t slotIndex = 0;
-  for (JsonObjectConst slot : gauges) {
-    char path[32];
-    snprintf(path, sizeof(path), "gauges[%u].metricId", slotIndex);
-    if (!readBackupInteger(slot, "metricId", 0, MAX_METRICS, integer, error, path)) {
-      sendJsonMessage(400, false, error.c_str());
-      return;
-    }
-    nextGaugeMap.slots[slotIndex].metricId = (uint8_t)integer;
-    snprintf(path, sizeof(path), "gauges[%u].type", slotIndex);
-    if (!readBackupInteger(slot, "type", 0, GAUGE_TYPE_COUNT - 1,
-                           integer, error, path)) {
-      sendJsonMessage(400, false, error.c_str());
-      return;
-    }
-    nextGaugeMap.slots[slotIndex].type = (uint8_t)integer;
-    snprintf(path, sizeof(path), "gauges[%u].scaleMax", slotIndex);
-    if (!readBackupInteger(slot, "scaleMax", 0, 65535, integer, error, path)) {
-      sendJsonMessage(400, false, error.c_str());
-      return;
-    }
-    nextGaugeMap.slots[slotIndex].scaleMax = (uint16_t)integer;
-    snprintf(path, sizeof(path), "gauges[%u].label", slotIndex);
-    if (!readBackupString(slot, "label", GAUGE_LABEL_LENGTH - 1,
-                          textValue, error, path)) {
-      sendJsonMessage(400, false, error.c_str());
-      return;
-    }
-    sanitizeGaugeLabel(textValue, nextGaugeLabels.labels[slotIndex],
-                       sizeof(nextGaugeLabels.labels[slotIndex]));
-    snprintf(path, sizeof(path), "gauges[%u].color", slotIndex);
-    if (!readBackupColor(slot, "color", nextGaugeMap.slots[slotIndex].arcColor,
-                         error, path)) {
-      sendJsonMessage(400, false, error.c_str());
-      return;
-    }
-    slotIndex++;
+  if (!readBackupPage(gauges, nextPages[0], nextPageLabels[0], "gauges", error)) {
+    sendJsonMessage(400, false, error.c_str());
+    return;
   }
+
+  // Optional. Absent means the backup came from a single-page device or an
+  // older firmware, and the empty pages seeded above are the right answer.
+  JsonObjectConst pagesIn = root["pages"].as<JsonObjectConst>();
+  if (!pagesIn.isNull()) {
+    if (!pagesIn["rotateSeconds"].isNull() &&
+        readBackupInteger(pagesIn, "rotateSeconds", 0, 255, integer, error,
+                          "pages.rotateSeconds"))
+      nextPageSettings.rotateSeconds = (uint8_t)integer;
+    if (!pagesIn["pinSeconds"].isNull() &&
+        readBackupInteger(pagesIn, "pinSeconds", 0, 240, integer, error,
+                          "pages.pinSeconds"))
+      nextPageSettings.pinSeconds = (uint8_t)integer;
+    if (!pagesIn["rememberPage"].isNull())
+      nextPageSettings.rememberPage = pagesIn["rememberPage"].as<bool>() ? 1 : 0;
+
+    JsonArrayConst extra = pagesIn["slots"].as<JsonArrayConst>();
+    if (!extra.isNull()) {
+      // "slots" carries pages 1..N-1 only; page 0 is the top-level "gauges"
+      // array, so there is exactly one source of truth per page. A backup from
+      // a build with more pages than this one simply has its tail ignored.
+      uint8_t page = 1;
+      for (JsonArrayConst pageArr : extra) {
+        if (page >= METRIC_PAGE_COUNT) break;
+        char what[16];
+        snprintf(what, sizeof(what), "pages.slots[%u]", (unsigned)(page - 1));
+        if (!readBackupPage(pageArr, nextPages[page], nextPageLabels[page],
+                            what, error)) {
+          sendJsonMessage(400, false, error.c_str());
+          return;
+        }
+        page++;
+      }
+    }
+  }
+  if (nextPageSettings.startPage >= METRIC_PAGE_COUNT) nextPageSettings.startPage = 0;
 
 #undef READ_INT
 #undef READ_BOOL
@@ -1161,8 +1237,13 @@ static void handleConfigImport() {
 
   dispSettings = nextDisplay;
   netSettings = nextNetwork;
-  gaugePages[0] = nextGaugeMap;
-  gaugePageLabels[0] = nextGaugeLabels;
+  for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++) {
+    gaugePages[p] = nextPages[p];
+    gaugePageLabels[p] = nextPageLabels[p];
+  }
+  pageSettings = nextPageSettings;
+  // The restored set may not include the page that was on screen.
+  if (!metricPageHasBindings(activeMetricPage)) setActiveMetricPage(0);
   backlightSettings = nextBacklight;
   touchSettings = nextTouch;
   themeSettings = nextTheme;
