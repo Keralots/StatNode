@@ -4,6 +4,8 @@ release/
 *.bin
 *.elf
 *.map
+# Web flasher firmware is a committed release artifact - GitHub Pages serves it.
+!docs/firmware/latest/*.bin
 __pycache__/
 *.pyc
 .codex/
