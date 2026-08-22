@@ -9,12 +9,14 @@ char wifiPass[65] = "";
 uint8_t brightness = 200;
 DisplaySettings dispSettings;
 NetworkSettings netSettings;
-GaugeMapping gaugeMap;
-GaugeLabels gaugeLabels;
+GaugeMapping gaugePages[METRIC_PAGE_COUNT];
+GaugeLabels gaugePageLabels[METRIC_PAGE_COUNT];
+uint8_t activeMetricPage = 0;
 BacklightSettings backlightSettings;
 TouchSettings touchSettings;
 LedSettings ledSettings;
 ThemeSettings themeSettings;
+PageSettings pageSettings;
 uint8_t displayStyle = STYLE_DEFAULT;
 uint8_t displayLayout = LAYOUT_TILES;
 uint8_t displaySurface = SURFACE_FLAT;
@@ -37,6 +39,7 @@ static const uint8_t BACKLIGHT_SETTINGS_VERSION = 1;
 static const uint8_t TOUCH_SETTINGS_VERSION = 3;
 static const uint8_t LED_SETTINGS_VERSION = 1;
 static const uint8_t THEME_SETTINGS_VERSION = 1;
+static const uint8_t PAGE_SETTINGS_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 //  Face families
@@ -226,14 +229,18 @@ void defaultDisplaySettings(DisplaySettings& ds) {
   ds.gauge    = { CLR_BLUE,  CLR_TEXT_DIM, CLR_TEXT };
 }
 
+// Slot accent defaults, shared by every page so a page the user fills in later
+// starts with the same readable spread instead of one flat colour.
+static const uint16_t kSlotPalette[NUM_GAUGE_SLOTS] = {
+  CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED,
+  CLR_VIOLET, CLR_ROSE
+};
+
 void defaultGaugeMapping(GaugeMapping& gm) {
   // Out-of-box mapping: bind metric ids 1..N to the slots and let each gauge
   // auto-classify by the metric's unit (same behavior the renderer had before
   // the mapping was configurable). The user overrides any slot from the portal.
-  static const uint16_t palette[NUM_GAUGE_SLOTS] = {
-    CLR_ORANGE, CLR_BLUE, CLR_GREEN, CLR_CYAN, CLR_GOLD, CLR_RED,
-    CLR_VIOLET, CLR_ROSE
-  };
+  const uint16_t* palette = kSlotPalette;
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
     // Board-dependent: eight on the 320x480 panel, six on the 240x240 squares
     // (see DEFAULT_BOUND_SLOTS). Slots past that start empty, so a device never
@@ -243,6 +250,21 @@ void defaultGaugeMapping(GaugeMapping& gm) {
     gm.slots[i].type     = GAUGE_TYPE_AUTO;
     gm.slots[i].scaleMax = 0;            // 0 = use the gauge type's default scale
     gm.slots[i].arcColor = palette[i];
+  }
+}
+
+// Pages past the first boot completely unbound, on purpose. An unbound page is
+// skipped by the cycler, so a device that has never been given a second page
+// behaves exactly like a single-page device. Seeding them from
+// defaultGaugeMapping() instead would make every page identical AND make all of
+// them cyclable, so an untouched device would tap between three copies of the
+// same screen.
+void emptyGaugeMapping(GaugeMapping& gm) {
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+    gm.slots[i].metricId = 0;
+    gm.slots[i].type     = GAUGE_TYPE_AUTO;
+    gm.slots[i].scaleMax = 0;
+    gm.slots[i].arcColor = kSlotPalette[i];
   }
 }
 
@@ -302,6 +324,20 @@ void defaultThemeSettings(ThemeSettings& ts) {
   ts.tileColor = CLR_CARD;
 }
 
+void defaultPageSettings(PageSettings& ps) {
+  memset(&ps, 0, sizeof(ps));
+  ps.version = PAGE_SETTINGS_VERSION;
+  // Rotation off out of the box. A fresh device has one bound page, so an
+  // interval would do nothing anyway, and a display that starts moving on its
+  // own after the user fills in a second page would be a surprise.
+  ps.rotateSeconds = 0;
+  ps.rotateUnit = 0;
+  // Long enough to actually read the page you just tapped to.
+  ps.pinSeconds = 30;
+  ps.rememberPage = 0;
+  ps.startPage = 0;
+}
+
 void defaultNetworkSettings(NetworkSettings& ns) {
   ns.useDHCP = true;
   ns.staticIP[0] = '\0';
@@ -324,12 +360,17 @@ void defaultNetworkSettings(NetworkSettings& ns) {
 void loadSettings() {
   defaultDisplaySettings(dispSettings);
   defaultNetworkSettings(netSettings);
-  defaultGaugeMapping(gaugeMap);
-  defaultGaugeLabels(gaugeLabels);
+  defaultGaugeMapping(gaugePages[0]);
+  defaultGaugeLabels(gaugePageLabels[0]);
+  for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
+    emptyGaugeMapping(gaugePages[p]);
+    defaultGaugeLabels(gaugePageLabels[p]);
+  }
   defaultBacklightSettings(backlightSettings);
   defaultTouchSettings(touchSettings);
   defaultLedSettings(ledSettings);
   defaultThemeSettings(themeSettings);
+  defaultPageSettings(pageSettings);
 
   prefs.begin(NVS_NAMESPACE, true);  // read-only
 
@@ -345,15 +386,20 @@ void loadSettings() {
   // also accept the older, shorter layout and copy what it holds into the
   // leading slots; the new trailing slots stay at their defaults (unbound is
   // the honest state - nothing was ever configured for them).
+  //
+  // These two keys are page 0's by definition. Pages past the first get their
+  // own keys rather than a longer blob here, so this migration keeps working
+  // untouched however many pages the build carries.
   {
     struct LegacyGaugeMappingV1 { GaugeSlot slots[LEGACY_GAUGE_SLOTS_V1]; };
     const size_t stored = prefs.getBytesLength("gauges");
     if (stored == sizeof(GaugeMapping)) {
-      prefs.getBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
+      prefs.getBytes("gauges", &gaugePages[0], sizeof(GaugeMapping));
     } else if (stored == sizeof(LegacyGaugeMappingV1)) {
       LegacyGaugeMappingV1 old;
       prefs.getBytes("gauges", &old, sizeof(old));
-      for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++) gaugeMap.slots[i] = old.slots[i];
+      for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++)
+        gaugePages[0].slots[i] = old.slots[i];
       Serial.printf("Settings: migrated %u-slot gauge mapping to %u slots\n",
                     (unsigned)LEGACY_GAUGE_SLOTS_V1, (unsigned)NUM_GAUGE_SLOTS);
     }
@@ -362,13 +408,29 @@ void loadSettings() {
     struct LegacyGaugeLabelsV1 { char labels[LEGACY_GAUGE_SLOTS_V1][GAUGE_LABEL_LENGTH]; };
     const size_t stored = prefs.getBytesLength("labels");
     if (stored == sizeof(GaugeLabels)) {
-      prefs.getBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
+      prefs.getBytes("labels", &gaugePageLabels[0], sizeof(GaugeLabels));
     } else if (stored == sizeof(LegacyGaugeLabelsV1)) {
       LegacyGaugeLabelsV1 old;
       prefs.getBytes("labels", &old, sizeof(old));
       for (uint8_t i = 0; i < LEGACY_GAUGE_SLOTS_V1; i++)
-        strlcpy(gaugeLabels.labels[i], old.labels[i], GAUGE_LABEL_LENGTH);
+        strlcpy(gaugePageLabels[0].labels[i], old.labels[i], GAUGE_LABEL_LENGTH);
     }
+  }
+  // Pages past the first never existed under an older firmware, so there is no
+  // legacy layout to accept here - an absent key just leaves the page empty.
+  for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
+    char key[16];
+    pageNvsKey(key, sizeof(key), "gauges", p);
+    if (prefs.getBytesLength(key) == sizeof(GaugeMapping))
+      prefs.getBytes(key, &gaugePages[p], sizeof(GaugeMapping));
+    pageNvsKey(key, sizeof(key), "labels", p);
+    if (prefs.getBytesLength(key) == sizeof(GaugeLabels))
+      prefs.getBytes(key, &gaugePageLabels[p], sizeof(GaugeLabels));
+  }
+  if (prefs.getBytesLength("pages") == sizeof(PageSettings)) {
+    PageSettings stored;
+    prefs.getBytes("pages", &stored, sizeof(stored));
+    if (stored.version == PAGE_SETTINGS_VERSION) pageSettings = stored;
   }
   if (prefs.getBytesLength("backlight") == sizeof(BacklightSettings)) {
     BacklightSettings stored;
@@ -495,11 +557,26 @@ void loadSettings() {
   if (themeSettings.labelMode >= THEME_LABEL_MODE_COUNT)
     themeSettings.labelMode = THEME_LABEL_CLASSIC;
   if (themeSettings.tileTintPct > 30) themeSettings.tileTintPct = 30;
-  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    gaugeLabels.labels[i][GAUGE_LABEL_LENGTH - 1] = '\0';
-    char cleaned[GAUGE_LABEL_LENGTH];
-    sanitizeGaugeLabel(gaugeLabels.labels[i], cleaned, sizeof(cleaned));
-    strlcpy(gaugeLabels.labels[i], cleaned, sizeof(gaugeLabels.labels[i]));
+  pageSettings.rotateUnit = pageSettings.rotateUnit ? 1 : 0;
+  pageSettings.rememberPage = pageSettings.rememberPage ? 1 : 0;
+  if (pageSettings.pinSeconds > 240) pageSettings.pinSeconds = 240;
+  if (pageSettings.startPage >= METRIC_PAGE_COUNT) pageSettings.startPage = 0;
+  // Never boot into an empty page while another page has bindings. This also
+  // covers page 0: the editor is allowed to clear it, so treating it as an
+  // unconditional fallback would leave the panel blank after a restart.
+  const uint8_t requestedPage = pageSettings.rememberPage
+    ? pageSettings.startPage : 0;
+  activeMetricPage = metricPageHasBindings(requestedPage)
+    ? requestedPage : firstBoundMetricPage(0);
+
+  for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++) {
+    for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
+      char* label = gaugePageLabels[p].labels[i];
+      label[GAUGE_LABEL_LENGTH - 1] = '\0';
+      char cleaned[GAUGE_LABEL_LENGTH];
+      sanitizeGaugeLabel(label, cleaned, sizeof(cleaned));
+      strlcpy(label, cleaned, GAUGE_LABEL_LENGTH);
+    }
   }
 
   prefs.end();
@@ -538,12 +615,21 @@ void saveSettings() {
   prefs.begin(NVS_NAMESPACE, false);  // read-write
   prefs.putBytes("disp", &dispSettings, sizeof(DisplaySettings));
   prefs.putBytes("net", &netSettings, sizeof(NetworkSettings));
-  prefs.putBytes("gauges", &gaugeMap, sizeof(GaugeMapping));
-  prefs.putBytes("labels", &gaugeLabels, sizeof(GaugeLabels));
+  // Page 0 keeps the original key names so an older firmware still reads it.
+  prefs.putBytes("gauges", &gaugePages[0], sizeof(GaugeMapping));
+  prefs.putBytes("labels", &gaugePageLabels[0], sizeof(GaugeLabels));
+  for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
+    char key[16];
+    pageNvsKey(key, sizeof(key), "gauges", p);
+    prefs.putBytes(key, &gaugePages[p], sizeof(GaugeMapping));
+    pageNvsKey(key, sizeof(key), "labels", p);
+    prefs.putBytes(key, &gaugePageLabels[p], sizeof(GaugeLabels));
+  }
   prefs.putBytes("backlight", &backlightSettings, sizeof(BacklightSettings));
   prefs.putBytes("touch", &touchSettings, sizeof(TouchSettings));
   prefs.putBytes("led", &ledSettings, sizeof(LedSettings));
   prefs.putBytes("theme", &themeSettings, sizeof(ThemeSettings));
+  prefs.putBytes("pages", &pageSettings, sizeof(PageSettings));
   prefs.putString("ssid", wifiSSID);
   prefs.putString("pass", wifiPass);
   prefs.putUChar("bright", brightness);
@@ -563,6 +649,15 @@ bool factoryResetSettings() {
   const bool cleared = prefs.clear();
   prefs.end();
   return cleared;
+}
+
+void saveStartMetricPage() {
+  if (!pageSettings.rememberPage) return;
+  if (pageSettings.startPage == activeMetricPage) return;  // nothing to rewrite
+  pageSettings.startPage = activeMetricPage;
+  prefs.begin(NVS_NAMESPACE, false);
+  prefs.putBytes("pages", &pageSettings, sizeof(PageSettings));
+  prefs.end();
 }
 
 void saveDisplayFace() {
@@ -587,9 +682,51 @@ void sanitizeGaugeLabel(const char* in, char* out, size_t outSize) {
   out[written] = '\0';
 }
 
+// Page 0 keeps the bare key so an older firmware still finds it; later pages
+// append their index. NVS caps key names at 15 characters, which leaves room
+// well past the page counts this device will ever carry.
+void pageNvsKey(char* out, size_t len, const char* base, uint8_t page) {
+  if (page == 0) strlcpy(out, base, len);
+  else snprintf(out, len, "%s%u", base, (unsigned)page);
+}
+
+// A page with nothing bound has nothing to draw, so the cycler steps over it.
+// Deliberately keyed on the stored binding rather than on what the live packet
+// carries: otherwise a page would appear and vanish as the companion restarts.
+bool metricPageHasBindings(uint8_t page) {
+  if (page >= METRIC_PAGE_COUNT) return false;
+  for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++)
+    if (gaugePages[page].slots[i].metricId != 0) return true;
+  return false;
+}
+
+uint8_t metricPageCountBound() {
+  uint8_t n = 0;
+  for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++)
+    if (metricPageHasBindings(p)) n++;
+  return n;
+}
+
+uint8_t firstBoundMetricPage(uint8_t fallback) {
+  for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++)
+    if (metricPageHasBindings(p)) return p;
+  return fallback < METRIC_PAGE_COUNT ? fallback : 0;
+}
+
+// activeMetricPage is only ever set from validated paths, but a stray value
+// would index out of bounds on every frame, so clamp at the accessor.
+GaugeMapping& activeGaugeMap() {
+  return gaugePages[activeMetricPage < METRIC_PAGE_COUNT ? activeMetricPage : 0];
+}
+
+GaugeLabels& activeGaugeLabels() {
+  return gaugePageLabels[activeMetricPage < METRIC_PAGE_COUNT ? activeMetricPage : 0];
+}
+
 const char* gaugeDisplayLabel(uint8_t slotIndex, const char* fallback) {
-  if (slotIndex < NUM_GAUGE_SLOTS && gaugeLabels.labels[slotIndex][0])
-    return gaugeLabels.labels[slotIndex];
+  const GaugeLabels& labels = activeGaugeLabels();
+  if (slotIndex < NUM_GAUGE_SLOTS && labels.labels[slotIndex][0])
+    return labels.labels[slotIndex];
   return fallback ? fallback : "";
 }
 

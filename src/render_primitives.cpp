@@ -11,7 +11,7 @@
 // ---------------------------------------------------------------------------
 //  Monitor screen - configurable metric->gauge mapping.
 //  Each of the NUM_GAUGE_SLOTS slots binds a PC metric (by id) to a gauge style,
-//  full-scale range, and color (gaugeMap, persisted in NVS, edited from the web
+//  full-scale range, and color (the active metric page, persisted in NVS, edited from the web
 //  portal). Slots are laid out in a responsive 3-column grid sized to the panel.
 // ---------------------------------------------------------------------------
 static uint8_t classifyByUnit(const char* unit) {
@@ -255,9 +255,12 @@ uint8_t debouncedStatus() {
 
 // Bound slots whose metric is present in the live packet, in slot order.
 uint8_t collectVisibleSlots(VisSlot out[NUM_GAUGE_SLOTS]) {
+  // Resolved once: out[].slot points into this mapping for the caller's whole
+  // frame, so every slot in the result must come from the same page.
+  const GaugeMapping& map = activeGaugeMap();
   uint8_t n = 0;
   for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
-    const GaugeSlot& s = gaugeMap.slots[i];
+    const GaugeSlot& s = map.slots[i];
     if (s.metricId == 0) continue;
     const PcMetric* m = pcMetricFindById(s.metricId);
     if (!m) continue;
@@ -296,16 +299,21 @@ float slotFraction(float value, float scale) {
 // percent of full-scale), but with hysteresis: enters at the threshold, exits
 // 5 points below it, so a reading hovering around the line does not flap the
 // warn color at the packet rate. Per-slot state.
+// File scope, not function scope, so the paths that know the state has gone
+// stale can clear it - see resetSlotWarnState().
+static uint8_t gWarnState = 0;   // bitmask, NUM_GAUGE_SLOTS <= 8
+
+void resetSlotWarnState() { gWarnState = 0; }
+
 bool slotWarn(uint8_t slotIdx, float value, float scale) {
-  static uint8_t state = 0;   // bitmask, NUM_GAUGE_SLOTS <= 8
   if (dispSettings.warnThresholdPct == 0 || scale <= 0) return false;
   const float pct = (value / scale) * 100.0f;
   const float enter = (float)dispSettings.warnThresholdPct;
-  const bool on = state & (1u << slotIdx);
+  const bool on = gWarnState & (1u << slotIdx);
   const bool next = on ? (pct > enter - 5.0f) : (pct >= enter);
   if (!gCaptureRender) {
-    if (next) state |= (1u << slotIdx);
-    else      state &= ~(1u << slotIdx);
+    if (next) gWarnState |= (1u << slotIdx);
+    else      gWarnState &= ~(1u << slotIdx);
   }
   return next;
 }
@@ -511,6 +519,15 @@ void drawMeterBar(int16_t x, int16_t y, int16_t w, int16_t h,
 // window immediately (a new extreme must be visible at once) and contracts
 // slowly (5% per redraw), so the chart does not rescale-jump every time an
 // extreme leaves the ring. Returns false when there is nothing to plot yet.
+// File scope for the same reason as gWarnState: these smoothed bounds describe
+// whatever metric the slot held when they were last written, so a rebind or a
+// page change has to clear them or the new metric's chart opens on the old
+// one's scale.
+static float gSparkLo[NUM_GAUGE_SLOTS], gSparkHi[NUM_GAUGE_SLOTS];
+static uint8_t gSparkInit = 0;
+
+void resetSparkBoundsState() { gSparkInit = 0; }
+
 bool sparkBounds(const SlotHistory& hist, uint8_t slotIdx, bool advance,
                         float& lo, float& hi) {
   if (hist.count < 2) return false;
@@ -545,29 +562,27 @@ bool sparkBounds(const SlotHistory& hist, uint8_t slotIdx, bool advance,
   wlo -= pad;
   whi += pad;
 
-  static float sLo[NUM_GAUGE_SLOTS], sHi[NUM_GAUGE_SLOTS];
-  static uint8_t sInit = 0;
   const uint8_t bit = (uint8_t)(1u << slotIdx);
   if (gCaptureRender) {
-    lo = (sInit & bit) ? sLo[slotIdx] : wlo;
-    hi = (sInit & bit) ? sHi[slotIdx] : whi;
+    lo = (gSparkInit & bit) ? gSparkLo[slotIdx] : wlo;
+    hi = (gSparkInit & bit) ? gSparkHi[slotIdx] : whi;
     return true;
   }
   // Mutate the smoothed bounds only when a new sample arrived - a plain full
   // redraw (portal preview cycle) must reproduce identical pixels, otherwise
   // the chart creeps every 4 s while the preview is open.
-  if (hist.count <= 2 || !(sInit & bit)) {
-    sLo[slotIdx] = wlo;
-    sHi[slotIdx] = whi;
-    sInit |= bit;
+  if (hist.count <= 2 || !(gSparkInit & bit)) {
+    gSparkLo[slotIdx] = wlo;
+    gSparkHi[slotIdx] = whi;
+    gSparkInit |= bit;
   } else if (advance) {
-    if (wlo < sLo[slotIdx]) sLo[slotIdx] = wlo;
-    else sLo[slotIdx] += (wlo - sLo[slotIdx]) * 0.05f;
-    if (whi > sHi[slotIdx]) sHi[slotIdx] = whi;
-    else sHi[slotIdx] += (whi - sHi[slotIdx]) * 0.05f;
+    if (wlo < gSparkLo[slotIdx]) gSparkLo[slotIdx] = wlo;
+    else gSparkLo[slotIdx] += (wlo - gSparkLo[slotIdx]) * 0.05f;
+    if (whi > gSparkHi[slotIdx]) gSparkHi[slotIdx] = whi;
+    else gSparkHi[slotIdx] += (whi - gSparkHi[slotIdx]) * 0.05f;
   }
-  lo = sLo[slotIdx];
-  hi = sHi[slotIdx];
+  lo = gSparkLo[slotIdx];
+  hi = gSparkHi[slotIdx];
   return true;
 }
 

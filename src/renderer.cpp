@@ -145,9 +145,16 @@ static void drawMonitorStyled(bool fr) {
     // sprites differently and must not both hold one while only one can draw.
     // Keyed on the NEW surface, independently of what else moved.
     if (faceChanged && !surfaceUsesGlass(face.surface)) glassReleaseSprites();
-    // A face change is one of the two moments the wash hysteresis is known to
-    // be stale; the other is a metric-mapping save (forceDisplayRedraw).
-    if (faceChanged) resetWashState();
+    // A face change is one of the two moments the per-slot hysteresis is known
+    // to be stale; the other is a metric-mapping save (forceDisplayRedraw).
+    // Warn latches and chart bounds go stale with the wash step, so clearing
+    // only the wash left a slot wearing the previous face's warn colour and
+    // charting on its old scale.
+    if (faceChanged) {
+      resetWashState();
+      resetSlotWarnState();
+      resetSparkBoundsState();
+    }
     lastLayout = face.layout;
     lastSurface = face.surface;
     lastBands = face.bands;
@@ -305,6 +312,97 @@ void forceDisplayRedraw(bool clearFirst) {
   lastUpdate = 0;
   resetGaugeTextCache();
   // The clearing form is what a metric-mapping save asks for, and a rebind or
-  // a scale change is exactly when a slot's wash step stops meaning anything.
-  if (clearFirst) resetWashState();
+  // a scale change is exactly when a slot's wash step, warn latch and smoothed
+  // chart bounds all stop meaning anything.
+  if (clearFirst) {
+    resetWashState();
+    resetSlotWarnState();
+    resetSparkBoundsState();
+  }
+}
+
+void setActiveMetricPage(uint8_t page) {
+  if (page >= METRIC_PAGE_COUNT || page == activeMetricPage) return;
+  activeMetricPage = page;
+  // A page switch rebinds every slot at once, which is the strongest form of
+  // the metric-mapping save this call already models: it clears the panel, the
+  // gauge text cache and all three per-slot hysteresis states.
+  forceDisplayRedraw(true);
+}
+
+void cycleMetricPage(int8_t direction) {
+  if (metricPageCountBound() < 2) return;
+  for (uint8_t step = 1; step <= METRIC_PAGE_COUNT; step++) {
+    int candidate = (int)activeMetricPage + direction * step;
+    while (candidate < 0) candidate += METRIC_PAGE_COUNT;
+    candidate %= METRIC_PAGE_COUNT;
+    if (metricPageHasBindings((uint8_t)candidate)) {
+      setActiveMetricPage((uint8_t)candidate);
+      return;
+    }
+  }
+}
+
+// Automatic page rotation.
+//
+// Ticked from loop() rather than from updateDisplay() on purpose: the
+// \screen.bmp handler calls updateDisplay() synchronously, so a timer living
+// there would advance the page every time the portal takes its five second
+// screenshot. The gCaptureRender guard below is belt and braces for the same
+// reason.
+static uint32_t gPageRotateAt = 0;
+static uint32_t gPagePinUntil = 0;
+static uint32_t gPageRotateInterval = 0;
+static bool gPageRotationActive = false;
+static bool gPagePinned = false;
+
+static void resetMetricPageRotationDeadline() {
+  gPageRotateAt = 0;
+  gPageRotateInterval = 0;
+  gPageRotationActive = false;
+}
+
+void pinMetricPage() {
+  gPagePinned = pageSettings.pinSeconds != 0;
+  gPagePinUntil = millis() + (uint32_t)pageSettings.pinSeconds * 1000u;
+  // Re-arm from the pin expiry, not from the old deadline.
+  resetMetricPageRotationDeadline();
+}
+
+void handleMetricPageRotation() {
+  if (gCaptureRender) return;
+
+  const uint32_t now = millis();
+  // Expire the pin even while rotation is disabled or the clock is showing.
+  // The loop observes the short deadline continuously, so it is cleared before
+  // the signed wrap-safe comparison could become ambiguous 2^31 ms later.
+  if (gPagePinned && (int32_t)(now - gPagePinUntil) >= 0) {
+    gPagePinned = false;
+    resetMetricPageRotationDeadline();
+  }
+
+  // Rotating behind a clock or a blank panel would just mean the user finds a
+  // different page than the one they left when the monitor comes back. Reset
+  // the deadline so returning to the monitor grants a complete interval.
+  if (pageSettings.rotateSeconds == 0 || getScreenState() != SCREEN_MONITOR ||
+      metricPageCountBound() < 2) {
+    resetMetricPageRotationDeadline();
+    return;
+  }
+
+  if (gPagePinned) return;
+
+  const uint32_t step = pageSettings.rotateUnit ? 60000u : 1000u;
+  const uint32_t interval = (uint32_t)pageSettings.rotateSeconds * step;
+  // A changed value or unit starts a fresh interval instead of inheriting the
+  // deadline calculated from the previous configuration.
+  if (!gPageRotationActive || gPageRotateInterval != interval) {
+    gPageRotationActive = true;
+    gPageRotateInterval = interval;
+    gPageRotateAt = now + interval;
+    return;
+  }
+  if ((int32_t)(now - gPageRotateAt) < 0) return;
+  cycleMetricPage(1);
+  gPageRotateAt = millis() + interval;
 }

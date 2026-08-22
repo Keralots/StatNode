@@ -45,6 +45,21 @@ struct GaugeLabels {
   char labels[NUM_GAUGE_SLOTS][GAUGE_LABEL_LENGTH];
 };
 
+// Metric page behavior. Its own versioned NVS blob so adding it cannot disturb
+// any existing key.
+struct PageSettings {
+  uint8_t version;
+  uint8_t rotateSeconds;   // auto-advance interval, in rotateUnit; 0 = off
+  uint8_t pinSeconds;      // a manual switch holds the page this long
+  uint8_t rememberPage;    // restore startPage at boot instead of page 0
+  uint8_t startPage;       // only meaningful when rememberPage is set
+  uint8_t rotateUnit;      // 0 = rotateSeconds counts seconds, 1 = minutes.
+                           // Took a reserved byte so the blob keeps its size
+                           // and version, and an old record reads back as
+                           // seconds, which is what it always meant.
+  uint8_t reserved[2];
+};
+
 // Backlight automation is also a separate versioned NVS blob. `brightness`
 // remains the normal daytime level for backwards compatibility.
 struct BacklightSettings {
@@ -217,6 +232,10 @@ enum TouchAction : uint8_t {
   TOUCH_ACTION_PREV_STYLE   = 2,
   TOUCH_ACTION_TOGGLE_CLOCK = 3,
   TOUCH_ACTION_TOGGLE_POWER = 4,
+  // Added after the face actions, so existing stored values keep their meaning
+  // and TouchSettings needs no version bump.
+  TOUCH_ACTION_NEXT_PAGE    = 5,
+  TOUCH_ACTION_PREV_PAGE    = 6,
   TOUCH_ACTION_COUNT
 };
 
@@ -330,12 +349,17 @@ extern char wifiPass[65];
 extern uint8_t brightness;
 extern DisplaySettings dispSettings;
 extern NetworkSettings netSettings;
-extern GaugeMapping gaugeMap;
-extern GaugeLabels gaugeLabels;
+// One binding set per metric page. Page 0 is the one every device has always
+// had; see METRIC_PAGE_COUNT for why the extra pages are additive.
+extern GaugeMapping gaugePages[METRIC_PAGE_COUNT];
+extern GaugeLabels gaugePageLabels[METRIC_PAGE_COUNT];
+// Page the renderer currently draws. Runtime state, not persisted here.
+extern uint8_t activeMetricPage;
 extern BacklightSettings backlightSettings;
 extern TouchSettings touchSettings;
 extern LedSettings ledSettings;
 extern ThemeSettings themeSettings;
+extern PageSettings pageSettings;
 extern uint8_t displayStyle;   // DisplayStyle value
 // The face tuple. Each of the four is its own NVS scalar, never a blob field,
 // for the same reason displayStyle is one: growing "disp" resizes it and a size
@@ -392,15 +416,39 @@ bool factoryResetSettings();
 void defaultDisplaySettings(DisplaySettings& ds);
 void defaultNetworkSettings(NetworkSettings& ns);
 void defaultGaugeMapping(GaugeMapping& gm);
+// Every slot unbound, accents still seeded. What pages past the first get on a
+// factory-fresh device, so they stay skippable until the user fills one in.
+void emptyGaugeMapping(GaugeMapping& gm);
 void defaultGaugeLabels(GaugeLabels& labels);
 void defaultBacklightSettings(BacklightSettings& bs);
 void defaultTouchSettings(TouchSettings& ts);
 void defaultLedSettings(LedSettings& ls);
 void saveLedSettings();
 void defaultThemeSettings(ThemeSettings& ts);
+void defaultPageSettings(PageSettings& ps);
+// Persists the page the user deliberately selected, when rememberPage is set.
+// Automatic rotation deliberately does NOT call this: writing every advance
+// would burn NVS for a value that is only interesting when a human chose it.
+void saveStartMetricPage();
 // Writes the face record (tuple + derived legacy style) on its own, without
 // rewriting every other NVS key. The touch cycler is its only caller.
 void saveDisplayFace();
+
+// The binding set the renderer, the history sampler and the portal editor act
+// on. Resolve this ONCE per frame and keep the result: VisSlot stores pointers
+// into the returned mapping, so re-resolving mid-frame after a page change
+// would leave earlier pointers describing a different page.
+GaugeMapping& activeGaugeMap();
+GaugeLabels&  activeGaugeLabels();
+
+// True when the page has at least one slot bound. The cycler skips pages that
+// do not, which is what keeps an unconfigured device single-page.
+bool metricPageHasBindings(uint8_t page);
+uint8_t metricPageCountBound();
+// First page with at least one binding, or fallback when every page is empty.
+uint8_t firstBoundMetricPage(uint8_t fallback = 0);
+// Builds the NVS key for a page's mapping or labels blob ("gauges", "gauges1").
+void pageNvsKey(char* out, size_t len, const char* base, uint8_t page);
 
 // Keep custom labels ASCII-only because the bundled display fonts do not
 // provide general UTF-8 glyph coverage. Leading/trailing spaces are removed.

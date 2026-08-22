@@ -4,7 +4,7 @@
 // =============================================================================
 //  Firmware version
 // =============================================================================
-#define FW_VERSION          "1.2.0"
+#define FW_VERSION          "1.3.0"
 #define PRODUCT_NAME        "StatNode"
 
 // Board variant - injected into the web UI for OTA asset filtering.
@@ -127,6 +127,13 @@
 #else
 #define DEFAULT_BOUND_SLOTS          6
 #endif
+
+// How many independent sets of slot bindings ("metric pages") the device holds.
+// At 1 this is byte-for-byte the single-mapping behavior that shipped before
+// pages existed. Page 0 always persists under the original NVS keys "gauges" and
+// "labels", so raising this count adds keys instead of resizing a blob and never
+// migrates an existing device.
+#define METRIC_PAGE_COUNT            3
 
 // Default GPIO for the TTP223 capacitive pad. 4 on both S3 and C3: that is where
 // the pre-shipped units wire it, and the C3's pad was never physically wired, so
