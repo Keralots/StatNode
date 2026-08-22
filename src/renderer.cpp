@@ -352,27 +352,53 @@ void cycleMetricPage(int8_t direction) {
 // reason.
 static uint32_t gPageRotateAt = 0;
 static uint32_t gPagePinUntil = 0;
+static uint32_t gPageRotateInterval = 0;
+static bool gPageRotationActive = false;
+static bool gPagePinned = false;
+
+static void resetMetricPageRotationDeadline() {
+  gPageRotateAt = 0;
+  gPageRotateInterval = 0;
+  gPageRotationActive = false;
+}
 
 void pinMetricPage() {
+  gPagePinned = pageSettings.pinSeconds != 0;
   gPagePinUntil = millis() + (uint32_t)pageSettings.pinSeconds * 1000u;
-  gPageRotateAt = 0;   // re-armed from the pin expiry, not from the old deadline
+  // Re-arm from the pin expiry, not from the old deadline.
+  resetMetricPageRotationDeadline();
 }
 
 void handleMetricPageRotation() {
-  if (pageSettings.rotateSeconds == 0) return;
   if (gCaptureRender) return;
-  // Rotating behind a clock or a blank panel would just mean the user finds a
-  // different page than the one they left when the monitor comes back.
-  if (getScreenState() != SCREEN_MONITOR) return;
-  if (metricPageCountBound() < 2) return;
 
   const uint32_t now = millis();
-  // Signed difference so the comparison survives the millis() wrap at ~49 days.
-  if ((int32_t)(now - gPagePinUntil) < 0) return;
+  // Expire the pin even while rotation is disabled or the clock is showing.
+  // The loop observes the short deadline continuously, so it is cleared before
+  // the signed wrap-safe comparison could become ambiguous 2^31 ms later.
+  if (gPagePinned && (int32_t)(now - gPagePinUntil) >= 0) {
+    gPagePinned = false;
+    resetMetricPageRotationDeadline();
+  }
+
+  // Rotating behind a clock or a blank panel would just mean the user finds a
+  // different page than the one they left when the monitor comes back. Reset
+  // the deadline so returning to the monitor grants a complete interval.
+  if (pageSettings.rotateSeconds == 0 || getScreenState() != SCREEN_MONITOR ||
+      metricPageCountBound() < 2) {
+    resetMetricPageRotationDeadline();
+    return;
+  }
+
+  if (gPagePinned) return;
 
   const uint32_t step = pageSettings.rotateUnit ? 60000u : 1000u;
   const uint32_t interval = (uint32_t)pageSettings.rotateSeconds * step;
-  if (gPageRotateAt == 0) {
+  // A changed value or unit starts a fresh interval instead of inheriting the
+  // deadline calculated from the previous configuration.
+  if (!gPageRotationActive || gPageRotateInterval != interval) {
+    gPageRotationActive = true;
+    gPageRotateInterval = interval;
     gPageRotateAt = now + interval;
     return;
   }

@@ -445,6 +445,8 @@ GaugeLabels&  activeGaugeLabels();
 // do not, which is what keeps an unconfigured device single-page.
 bool metricPageHasBindings(uint8_t page);
 uint8_t metricPageCountBound();
+// First page with at least one binding, or fallback when every page is empty.
+uint8_t firstBoundMetricPage(uint8_t fallback = 0);
 // Builds the NVS key for a page's mapping or labels blob ("gauges", "gauges1").
 void pageNvsKey(char* out, size_t len, const char* base, uint8_t page);
 

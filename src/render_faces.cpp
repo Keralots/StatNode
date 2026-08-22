@@ -31,8 +31,14 @@ static inline void glassBlit(lgfx::LGFX_Sprite& spr, int16_t x, int16_t y,
 }
 
 // Subpixel units, so the 8-bit values these were authored as are scaled up.
-extern const Rgb GLASS_TINT_AERO   = { 44 * RGB_ONE, 96 * RGB_ONE, 150 * RGB_ONE };
-extern const Rgb GLASS_TINT_LIQUID = { 66 * RGB_ONE, 62 * RGB_ONE, 134 * RGB_ONE };
+extern const Rgb GLASS_TINT_AERO = {
+  (int16_t)(44 * RGB_ONE), (int16_t)(96 * RGB_ONE),
+  (int16_t)(150 * RGB_ONE)
+};
+extern const Rgb GLASS_TINT_LIQUID = {
+  (int16_t)(66 * RGB_ONE), (int16_t)(62 * RGB_ONE),
+  (int16_t)(134 * RGB_ONE)
+};
 
 // Value/unit/label onto an already-composed glass window. Transparent text:
 // the two-argument setTextColor paints an opaque glyph box, which on glass

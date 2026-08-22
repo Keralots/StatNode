@@ -557,13 +557,17 @@ void loadSettings() {
   if (themeSettings.labelMode >= THEME_LABEL_MODE_COUNT)
     themeSettings.labelMode = THEME_LABEL_CLASSIC;
   if (themeSettings.tileTintPct > 30) themeSettings.tileTintPct = 30;
+  pageSettings.rotateUnit = pageSettings.rotateUnit ? 1 : 0;
+  pageSettings.rememberPage = pageSettings.rememberPage ? 1 : 0;
   if (pageSettings.pinSeconds > 240) pageSettings.pinSeconds = 240;
   if (pageSettings.startPage >= METRIC_PAGE_COUNT) pageSettings.startPage = 0;
-  // Restore a remembered page only if it still has bindings. A page the user
-  // has since emptied would otherwise boot the panel into an empty screen with
-  // no obvious way back.
-  if (pageSettings.rememberPage && metricPageHasBindings(pageSettings.startPage))
-    activeMetricPage = pageSettings.startPage;
+  // Never boot into an empty page while another page has bindings. This also
+  // covers page 0: the editor is allowed to clear it, so treating it as an
+  // unconditional fallback would leave the panel blank after a restart.
+  const uint8_t requestedPage = pageSettings.rememberPage
+    ? pageSettings.startPage : 0;
+  activeMetricPage = metricPageHasBindings(requestedPage)
+    ? requestedPage : firstBoundMetricPage(0);
 
   for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++) {
     for (uint8_t i = 0; i < NUM_GAUGE_SLOTS; i++) {
@@ -701,6 +705,12 @@ uint8_t metricPageCountBound() {
   for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++)
     if (metricPageHasBindings(p)) n++;
   return n;
+}
+
+uint8_t firstBoundMetricPage(uint8_t fallback) {
+  for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++)
+    if (metricPageHasBindings(p)) return p;
+  return fallback < METRIC_PAGE_COUNT ? fallback : 0;
 }
 
 // activeMetricPage is only ever set from validated paths, but a stray value

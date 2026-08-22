@@ -335,6 +335,7 @@ static void handleApiConfig() {
   pages["rotateUnit"] = pageSettings.rotateUnit;
   pages["pinSeconds"] = pageSettings.pinSeconds;
   pages["rememberPage"] = pageSettings.rememberPage != 0;
+  pages["startPage"] = pageSettings.startPage;
   JsonArray bound = pages["bound"].to<JsonArray>();
   for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++) bound.add(metricPageHasBindings(p));
   JsonArray gauges = doc["gauges"].to<JsonArray>();
@@ -486,6 +487,7 @@ static void handleConfigExport() {
   pagesOut["rotateUnit"] = pageSettings.rotateUnit;
   pagesOut["pinSeconds"] = pageSettings.pinSeconds;
   pagesOut["rememberPage"] = pageSettings.rememberPage != 0;
+  pagesOut["startPage"] = pageSettings.startPage;
   JsonArray extra = pagesOut["slots"].to<JsonArray>();
   for (uint8_t p = 1; p < METRIC_PAGE_COUNT; p++) {
     JsonArray pageArr = extra.add<JsonArray>();
@@ -710,8 +712,8 @@ static void handleSaveGauges() {
   // If nothing is bound anywhere there is nothing to fall back to, and staying
   // put is the honest result.
   if (!metricPageHasBindings(activeMetricPage)) {
-    for (uint8_t p = 0; p < METRIC_PAGE_COUNT; p++)
-      if (metricPageHasBindings(p)) { setActiveMetricPage(p); break; }
+    setActiveMetricPage(firstBoundMetricPage(activeMetricPage));
+    saveStartMetricPage();
   }
   // Editing a page that is not on screen must not flash the one that is.
   if (editPage == activeMetricPage) forceDisplayRedraw(true);
@@ -1212,28 +1214,66 @@ static void handleConfigImport() {
   // Optional. Absent means the backup came from a single-page device or an
   // older firmware, and the empty pages seeded above are the right answer.
   JsonObjectConst pagesIn = root["pages"].as<JsonObjectConst>();
+  if (!root["pages"].isNull() && pagesIn.isNull()) {
+    sendJsonMessage(400, false, "Invalid backup field 'pages': expected an object");
+    return;
+  }
   if (!pagesIn.isNull()) {
-    if (!pagesIn["rotateSeconds"].isNull() &&
-        readBackupInteger(pagesIn, "rotateSeconds", 0, 255, integer, error,
-                          "pages.rotateSeconds")) {
+    if (!pagesIn["rotateSeconds"].isNull()) {
+      if (!readBackupInteger(pagesIn, "rotateSeconds", 0, 255, integer, error,
+                             "pages.rotateSeconds")) {
+        sendJsonMessage(400, false, error.c_str());
+        return;
+      }
       nextPageSettings.rotateSeconds = (uint8_t)integer;
       // The interval and its unit travel together. A file written before the
       // unit existed always meant seconds, so take the number without its unit
       // rather than reading it against whatever the device is set to now.
       nextPageSettings.rotateUnit = 0;
     }
-    if (!pagesIn["rotateUnit"].isNull() &&
-        readBackupInteger(pagesIn, "rotateUnit", 0, 1, integer, error,
-                          "pages.rotateUnit"))
+    if (!pagesIn["rotateUnit"].isNull()) {
+      if (!readBackupInteger(pagesIn, "rotateUnit", 0, 1, integer, error,
+                             "pages.rotateUnit")) {
+        sendJsonMessage(400, false, error.c_str());
+        return;
+      }
       nextPageSettings.rotateUnit = (uint8_t)integer;
-    if (!pagesIn["pinSeconds"].isNull() &&
-        readBackupInteger(pagesIn, "pinSeconds", 0, 240, integer, error,
-                          "pages.pinSeconds"))
+    }
+    if (!pagesIn["pinSeconds"].isNull()) {
+      if (!readBackupInteger(pagesIn, "pinSeconds", 0, 240, integer, error,
+                             "pages.pinSeconds")) {
+        sendJsonMessage(400, false, error.c_str());
+        return;
+      }
       nextPageSettings.pinSeconds = (uint8_t)integer;
-    if (!pagesIn["rememberPage"].isNull())
-      nextPageSettings.rememberPage = pagesIn["rememberPage"].as<bool>() ? 1 : 0;
+    }
+    if (!pagesIn["rememberPage"].isNull()) {
+      if (!readBackupBool(pagesIn, "rememberPage", flag, error,
+                          "pages.rememberPage")) {
+        sendJsonMessage(400, false, error.c_str());
+        return;
+      }
+      nextPageSettings.rememberPage = flag ? 1 : 0;
+      // Page backups written before startPage was added cannot name their
+      // remembered page. Page 0 is deterministic; retaining the target
+      // device's previous value would make the restore depend on its history.
+      nextPageSettings.startPage = 0;
+    }
+    if (!pagesIn["startPage"].isNull()) {
+      if (!readBackupInteger(pagesIn, "startPage", 0, METRIC_PAGE_COUNT - 1,
+                             integer, error, "pages.startPage")) {
+        sendJsonMessage(400, false, error.c_str());
+        return;
+      }
+      nextPageSettings.startPage = (uint8_t)integer;
+    }
 
     JsonArrayConst extra = pagesIn["slots"].as<JsonArrayConst>();
+    if (!pagesIn["slots"].isNull() && extra.isNull()) {
+      sendJsonMessage(400, false,
+                      "Invalid backup field 'pages.slots': expected an array");
+      return;
+    }
     if (!extra.isNull()) {
       // "slots" carries pages 1..N-1 only; page 0 is the top-level "gauges"
       // array, so there is exactly one source of truth per page. A backup from
@@ -1265,8 +1305,11 @@ static void handleConfigImport() {
     gaugePageLabels[p] = nextPageLabels[p];
   }
   pageSettings = nextPageSettings;
+  if (!metricPageHasBindings(pageSettings.startPage))
+    pageSettings.startPage = firstBoundMetricPage(0);
   // The restored set may not include the page that was on screen.
-  if (!metricPageHasBindings(activeMetricPage)) setActiveMetricPage(0);
+  if (!metricPageHasBindings(activeMetricPage))
+    setActiveMetricPage(firstBoundMetricPage(0));
   backlightSettings = nextBacklight;
   touchSettings = nextTouch;
   themeSettings = nextTheme;
